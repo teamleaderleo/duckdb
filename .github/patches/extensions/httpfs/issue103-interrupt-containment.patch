@@ -1,7 +1,7 @@
 diff --git a/src/s3fs.cpp b/src/s3fs.cpp
 --- a/src/s3fs.cpp
 +++ b/src/s3fs.cpp
-@@ -728,12 +728,14 @@ S3FileHandle::S3FileHandle(FileSystem &fs, const OpenFileInfo &file, FileOpenFl
+@@ -728,12 +728,13 @@ S3FileHandle::S3FileHandle(FileSystem &fs, const OpenFileInfo &file, FileOpenFl
  }
  
  S3FileHandle::~S3FileHandle() {
