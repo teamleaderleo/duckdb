@@ -9,6 +9,7 @@ on:
       - tools/fieldwork/issue55_file_sink_probe.py
       - tools/fieldwork/issue55_file_sink_probe_v2.py
       - tools/fieldwork/issue55_crash_threshold_probe.py
+      - tools/fieldwork/issue55_tmp_publication_probe.py
       - tools/fieldwork/requirements-issue55.txt
       - .github/workflows/fieldwork-issue55-file-sink.yml
   workflow_dispatch:
@@ -33,13 +34,16 @@ jobs:
         run: python tools/fieldwork/issue55_file_sink_probe_v2.py --output issue55-results-v2.json
       - name: Run exact-threshold crash control
         run: python tools/fieldwork/issue55_crash_threshold_probe.py --output issue55-crash-threshold.json
+      - name: Run temporary-file publication matrix
+        run: python tools/fieldwork/issue55_tmp_publication_probe.py --output issue55-tmp-publication.json
       - name: Upload raw results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: fieldwork-issue55-results-v3
+          name: fieldwork-issue55-results-v4
           path: |
             issue55-results-v2.json
             issue55-crash-threshold.json
+            issue55-tmp-publication.json
           if-no-files-found: error
           retention-days: 30
