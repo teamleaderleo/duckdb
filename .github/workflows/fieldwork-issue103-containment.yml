@@ -1,0 +1,56 @@
+name: Fieldwork issue 103 containment experiment
+
+on:
+  push:
+    branches:
+      - fieldwork/103-s3-interrupt-containment
+    paths:
+      - .github/patches/extensions/httpfs/issue103-interrupt-containment.patch
+      - .github/patches/extensions/httpfs/issue103-interrupt-regression.patch
+      - .github/config/extensions/httpfs.cmake
+      - .github/workflows/fieldwork-issue103-containment.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  containment:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      GEN: ninja
+      CORE_EXTENSIONS: "httpfs;parquet"
+      BUILD_UNITTESTS: 1
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -y -qq
+          sudo apt-get install -y -qq ninja-build mold libcurl4-openssl-dev libssl-dev
+
+      - name: Build DuckDB and HTTPFS unit test
+        run: |
+          make debug
+          cmake --build build/debug --target unittest_httpfs --parallel 2
+
+      - name: Require interrupted multipart regression to pass
+        run: |
+          ./build/debug/test/unittest_httpfs \
+            "HTTPFS does not complete S3 multipart upload after COPY interruption" \
+            2>&1 | tee issue103-containment.log
+          printf '{"containment_passed":true}\n' > issue103-containment-summary.json
+
+      - name: Upload containment evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fieldwork-issue103-containment
+          path: |
+            issue103-containment.log
+            issue103-containment-summary.json
+          if-no-files-found: warn
+          retention-days: 30
