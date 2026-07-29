@@ -9,6 +9,12 @@ on:
       - .github/patches/extensions/httpfs/issue103-interrupt-regression.patch
       - .github/config/extensions/httpfs.cmake
       - .github/workflows/fieldwork-issue103-containment.yml
+  pull_request:
+    paths:
+      - .github/patches/extensions/httpfs/issue103-interrupt-containment.patch
+      - .github/patches/extensions/httpfs/issue103-interrupt-regression.patch
+      - .github/config/extensions/httpfs.cmake
+      - .github/workflows/fieldwork-issue103-containment.yml
   workflow_dispatch:
 
 permissions:
