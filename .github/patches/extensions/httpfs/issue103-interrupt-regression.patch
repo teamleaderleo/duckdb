@@ -1,33 +1,30 @@
 diff --git a/test/unittest/mock_s3_server.hpp b/test/unittest/mock_s3_server.hpp
 --- a/test/unittest/mock_s3_server.hpp
 +++ b/test/unittest/mock_s3_server.hpp
-@@ -51,6 +51,8 @@ struct MockS3ServerConfig {
- 	bool block_first_range_body_until_second_range = false;
+@@ -51,3 +51,5 @@ struct MockS3ServerConfig {
  	//! Hold a full GET response body until ReleaseFullGet is called
  	bool block_full_get_until_released = false;
 +	//! Hold the first multipart part response until ReleaseMultipartPart is called
 +	bool block_first_multipart_part_until_released = false;
  	//! Number of object HEADs to fail with a 400 before succeeding
- 	idx_t transient_head_failures = 0;
-@@ -92,6 +94,8 @@ public:
- 	vector<MockS3RequestObservation> Observations() const;
+@@ -91,4 +93,6 @@ public:
  	bool WaitForFullGet();
  	void ReleaseFullGet();
 +	bool WaitForMultipartPart();
 +	void ReleaseMultipartPart();
  
  private:
- 	struct Impl;
 diff --git a/test/unittest/mock_s3_server.cpp b/test/unittest/mock_s3_server.cpp
 --- a/test/unittest/mock_s3_server.cpp
 +++ b/test/unittest/mock_s3_server.cpp
-@@ -126,6 +126,25 @@ struct MockS3Server::Impl {
+@@ -120,4 +120,28 @@ struct MockS3Server::Impl {
  		full_get_release.notify_all();
  	}
  
 +	bool WaitForMultipartPart() {
 +		std::unique_lock<std::mutex> lock(multipart_part_lock);
-+		return multipart_part_started.wait_for(lock, std::chrono::seconds(10), [this]() { return multipart_part_seen; });
++		return multipart_part_started.wait_for(lock, std::chrono::seconds(10),
++		                                       [this]() { return multipart_part_seen; });
 +	}
 +
 +	void ReleaseMultipartPart() {
@@ -49,8 +46,7 @@ diff --git a/test/unittest/mock_s3_server.cpp b/test/unittest/mock_s3_server.cpp
 +	}
 +
  	bool MatchesRefreshTarget(const httplib::Request &request) const {
- 		auto range = GetHeader(request, "Range");
-@@ -451,6 +470,10 @@ struct MockS3Server::Impl {
+@@ -450,4 +473,8 @@ struct MockS3Server::Impl {
  		server.Get(bucket_path_with_slash, list_objects);
  
  		server.Put(path, [this](const httplib::Request &request, httplib::Response &response) {
@@ -59,8 +55,7 @@ diff --git a/test/unittest/mock_s3_server.cpp b/test/unittest/mock_s3_server.cpp
 +				BlockFirstMultipartPart();
 +			}
  			if (ShouldRejectStaleCredentials(request)) {
- 				SendForbidden(request, response);
-@@ -530,6 +553,11 @@ struct MockS3Server::Impl {
+@@ -527,4 +554,9 @@ struct MockS3Server::Impl {
  	std::condition_variable full_get_release;
  	bool full_get_seen = false;
  	bool full_get_released = false;
@@ -70,7 +65,8 @@ diff --git a/test/unittest/mock_s3_server.cpp b/test/unittest/mock_s3_server.cpp
 +	bool multipart_part_seen = false;
 +	bool multipart_part_released = false;
  };
-@@ -564,6 +592,14 @@ void MockS3Server::ReleaseFullGet() {
+@@ -559,5 +591,13 @@ void MockS3Server::ReleaseFullGet() {
+ void MockS3Server::ReleaseFullGet() {
  	impl->ReleaseFullGet();
  }
  
@@ -83,17 +79,15 @@ diff --git a/test/unittest/mock_s3_server.cpp b/test/unittest/mock_s3_server.cpp
 +}
 +
  string MockS3RefreshTargetName(MockS3RefreshTarget target) {
- 	switch (target) {
 diff --git a/test/unittest/httpfs_refresh_test.cpp b/test/unittest/httpfs_refresh_test.cpp
 --- a/test/unittest/httpfs_refresh_test.cpp
 +++ b/test/unittest/httpfs_refresh_test.cpp
-@@ -19,6 +19,7 @@
- #include <atomic>
+@@ -19,3 +19,4 @@
  #include <mutex>
  #include <new>
 +#include <thread>
  #include <unordered_map>
-@@ -949,6 +950,49 @@ static void RunAllTransientRetryScenarios(const string &client_implementation) {
+@@ -947,6 +948,54 @@ static void RunAllTransientRetryScenarios(const string &client_implementation) {
  	}
  }
  
@@ -137,9 +131,8 @@ diff --git a/test/unittest/httpfs_refresh_test.cpp b/test/unittest/httpfs_refres
 +
 +	auto observations = server.Observations();
 +	INFO(MockS3DescribeObservations(observations));
-+	REQUIRE(MockS3HasObservation(observations, "PUT", STALE_KEY_ID, 200, string(), "partNumber"));
-+	// A failed COPY must not publish buffered data by completing the multipart upload during destruction.
-+	REQUIRE_FALSE(MockS3HasObservation(observations, "POST", STALE_KEY_ID, 200, string(), "uploadId"));
++	REQUIRE(CountObservationsTarget(observations, "PUT", 200, "partNumber") > 0);
++	REQUIRE(CountObservationsTarget(observations, "POST", 200, "uploadId") == 0);
 +}
 +
  } // namespace
