@@ -9,6 +9,12 @@ on:
       - .github/patches/extensions/httpfs/issue103-query-failure-teardown.patch
       - .github/config/extensions/httpfs.cmake
       - .github/workflows/fieldwork-issue103-query-failure-teardown.yml
+  pull_request:
+    paths:
+      - tools/fieldwork/issue103-core-query-failure-teardown.patch
+      - .github/patches/extensions/httpfs/issue103-query-failure-teardown.patch
+      - .github/config/extensions/httpfs.cmake
+      - .github/workflows/fieldwork-issue103-query-failure-teardown.yml
   workflow_dispatch:
 
 concurrency:
