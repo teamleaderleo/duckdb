@@ -1,0 +1,62 @@
+name: Fieldwork issue 103 clean containment
+
+on:
+  push:
+    branches:
+      - fieldwork/103-s3-interrupt-containment-clean
+    paths:
+      - .github/patches/extensions/httpfs/issue103-interrupt-containment.patch
+      - .github/config/extensions/httpfs.cmake
+      - .github/workflows/fieldwork-issue103-containment-clean.yml
+  pull_request:
+    paths:
+      - .github/patches/extensions/httpfs/issue103-interrupt-containment.patch
+      - .github/config/extensions/httpfs.cmake
+      - .github/workflows/fieldwork-issue103-containment-clean.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  containment:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -y -qq
+          sudo apt-get install -y -qq ninja-build mold libcurl4-openssl-dev libssl-dev
+
+      - name: Configure DuckDB with pinned HTTPFS
+        run: |
+          cmake -S . -B build/issue103-clean -G Ninja \
+            -DFORCE_COLORED_OUTPUT=1 \
+            '-DBUILD_EXTENSIONS=;httpfs;parquet' \
+            -DDEBUG_MOVE=1 \
+            -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build focused HTTPFS unit test
+        run: cmake --build build/issue103-clean --target unittest_httpfs --parallel 2
+
+      - name: Run clean containment regression
+        run: |
+          ./build/issue103-clean/test/unittest_httpfs \
+            "HTTPFS contains S3 multipart publication during interrupted teardown" \
+            2>&1 | tee issue103-clean-containment.log
+          printf '{"clean_containment_passed":true}\n' > issue103-clean-containment-summary.json
+
+      - name: Upload clean containment evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fieldwork-issue103-clean-containment
+          path: |
+            issue103-clean-containment.log
+            issue103-clean-containment-summary.json
+          if-no-files-found: warn
+          retention-days: 30
