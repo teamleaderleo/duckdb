@@ -1,0 +1,11 @@
+diff --git a/test/unittest/httpfs_refresh_test.cpp b/test/unittest/httpfs_refresh_test.cpp
+--- a/test/unittest/httpfs_refresh_test.cpp
++++ b/test/unittest/httpfs_refresh_test.cpp
+@@ -992,6 +992,7 @@ static void RunInterruptedMultipartCopyScenario(const string &client_implementa
+ 	INFO(MockS3DescribeObservations(observations));
+ 	REQUIRE(CountObservationsTarget(observations, "PUT", 200, "partNumber") > 0);
+ 	REQUIRE(CountObservationsTarget(observations, "POST", 200, "uploadId") == 0);
++	REQUIRE(CountObservationsTarget(observations, "DELETE", 204, "uploadId") == 1);
+ }
+ 
+ } // namespace
