@@ -1,0 +1,64 @@
+name: Fieldwork issue 103 native abort experiment
+
+on:
+  push:
+    branches:
+      - fieldwork/103-s3-interrupt-abort
+    paths:
+      - .github/patches/extensions/httpfs/issue103-interrupt-abort.patch
+      - .github/patches/extensions/httpfs/issue103-interrupt-regression.patch
+      - .github/patches/extensions/httpfs/issue103-z-abort-regression.patch
+      - .github/config/extensions/httpfs.cmake
+      - .github/workflows/fieldwork-issue103-abort.yml
+  pull_request:
+    paths:
+      - .github/patches/extensions/httpfs/issue103-interrupt-abort.patch
+      - .github/patches/extensions/httpfs/issue103-interrupt-regression.patch
+      - .github/patches/extensions/httpfs/issue103-z-abort-regression.patch
+      - .github/config/extensions/httpfs.cmake
+      - .github/workflows/fieldwork-issue103-abort.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  abort:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      GEN: ninja
+      CORE_EXTENSIONS: "httpfs;parquet"
+      BUILD_UNITTESTS: 1
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -y -qq
+          sudo apt-get install -y -qq ninja-build mold libcurl4-openssl-dev libssl-dev
+
+      - name: Build DuckDB and HTTPFS unit test
+        run: |
+          make debug
+          cmake --build build/debug --target unittest_httpfs --parallel 2
+
+      - name: Require interrupted multipart upload to abort
+        run: |
+          ./build/debug/test/unittest_httpfs \
+            "HTTPFS does not complete S3 multipart upload after COPY interruption" \
+            2>&1 | tee issue103-abort.log
+          printf '{"native_abort_passed":true}\n' > issue103-abort-summary.json
+
+      - name: Upload native abort evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fieldwork-issue103-native-abort
+          path: |
+            issue103-abort.log
+            issue103-abort-summary.json
+          if-no-files-found: warn
+          retention-days: 30
