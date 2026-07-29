@@ -1,0 +1,39 @@
+name: Fieldwork issue 55 file-sink publication
+
+on:
+  push:
+    branches:
+      - fieldwork/55-file-sink-publication
+  pull_request:
+    paths:
+      - tools/fieldwork/issue55_file_sink_probe.py
+      - tools/fieldwork/requirements-issue55.txt
+      - .github/workflows/fieldwork-issue55-file-sink.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: tools/fieldwork/requirements-issue55.txt
+      - name: Install pinned DuckDB client
+        run: python -m pip install --require-hashes -r tools/fieldwork/requirements-issue55.txt
+      - name: Run deterministic publication probe
+        run: python tools/fieldwork/issue55_file_sink_probe.py --output issue55-results.json
+      - name: Upload raw result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fieldwork-issue55-results
+          path: issue55-results.json
+          if-no-files-found: error
+          retention-days: 30
