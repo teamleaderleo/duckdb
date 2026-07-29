@@ -23,7 +23,7 @@ diff --git a/src/include/duckdb/main/client_context.hpp b/src/include/duckdb/mai
 diff --git a/src/main/client_context.cpp b/src/main/client_context.cpp
 --- a/src/main/client_context.cpp
 +++ b/src/main/client_context.cpp
-@@ -342,10 +342,12 @@ ErrorData ClientContext::EndQueryInternal(ClientContextLock &lock, bool success,
+@@ -342,9 +342,11 @@ ErrorData ClientContext::EndQueryInternal(ClientContextLock &lock, bool success,
                                            optional_ptr<ErrorData> previous_error) {
 +	query_failure_teardown.store(!success);
  	if (active_query->executor) {
