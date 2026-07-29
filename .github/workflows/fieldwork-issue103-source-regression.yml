@@ -21,11 +21,7 @@ permissions:
 jobs:
   regression:
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
-    env:
-      GEN: ninja
-      CORE_EXTENSIONS: "httpfs;parquet"
-      BUILD_UNITTESTS: 1
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
         with:
@@ -36,16 +32,22 @@ jobs:
           sudo apt-get update -y -qq
           sudo apt-get install -y -qq ninja-build mold libcurl4-openssl-dev libssl-dev
 
-      - name: Build DuckDB and HTTPFS unit test
+      - name: Configure DuckDB with pinned HTTPFS tests
         run: |
-          make debug
-          cmake --build build/debug --target unittest_httpfs --parallel 2
+          cmake -S . -B build/issue103 -G Ninja \
+            -DFORCE_COLORED_OUTPUT=1 \
+            '-DBUILD_EXTENSIONS=;httpfs;parquet' \
+            -DDEBUG_MOVE=1 \
+            -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build only HTTPFS unit test
+        run: cmake --build build/issue103 --target unittest_httpfs --parallel 2
 
       - name: Confirm current source fails the new regression
         shell: bash
         run: |
           set +e
-          ./build/debug/test/unittest_httpfs \
+          ./build/issue103/test/unittest_httpfs \
             "HTTPFS does not complete S3 multipart upload after COPY interruption" \
             2>&1 | tee issue103-source-regression.log
           test_status=${PIPESTATUS[0]}
