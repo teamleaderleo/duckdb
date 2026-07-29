@@ -29,7 +29,7 @@ diff --git a/src/s3fs.cpp b/src/s3fs.cpp
 diff --git a/test/unittest/mock_s3_server.hpp b/test/unittest/mock_s3_server.hpp
 --- a/test/unittest/mock_s3_server.hpp
 +++ b/test/unittest/mock_s3_server.hpp
-@@ -51,6 +51,8 @@ struct MockS3ServerConfig {
+@@ -51,5 +51,7 @@ struct MockS3ServerConfig {
  	bool block_first_range_body_until_second_range = false;
  	//! Hold a full GET response body until ReleaseFullGet is called
  	bool block_full_get_until_released = false;
@@ -49,7 +49,7 @@ diff --git a/test/unittest/mock_s3_server.hpp b/test/unittest/mock_s3_server.hpp
 diff --git a/test/unittest/mock_s3_server.cpp b/test/unittest/mock_s3_server.cpp
 --- a/test/unittest/mock_s3_server.cpp
 +++ b/test/unittest/mock_s3_server.cpp
-@@ -126,6 +126,30 @@ struct MockS3Server::Impl {
+@@ -126,5 +126,29 @@ struct MockS3Server::Impl {
  		full_get_release.notify_all();
  	}
  
@@ -79,7 +79,7 @@ diff --git a/test/unittest/mock_s3_server.cpp b/test/unittest/mock_s3_server.cpp
 +
  	bool MatchesRefreshTarget(const httplib::Request &request) const {
  		auto range = GetHeader(request, "Range");
-@@ -450,6 +474,10 @@ struct MockS3Server::Impl {
+@@ -450,5 +474,9 @@ struct MockS3Server::Impl {
  		server.Get(bucket_path_with_slash, list_objects);
  
  		server.Put(path, [this](const httplib::Request &request, httplib::Response &response) {
@@ -89,7 +89,7 @@ diff --git a/test/unittest/mock_s3_server.cpp b/test/unittest/mock_s3_server.cpp
 +			}
  			if (ShouldRejectStaleCredentials(request)) {
  				SendForbidden(request, response);
-@@ -527,6 +555,11 @@ struct MockS3Server::Impl {
+@@ -527,4 +555,9 @@ struct MockS3Server::Impl {
  	std::condition_variable full_get_release;
  	bool full_get_seen = false;
  	bool full_get_released = false;
@@ -115,7 +115,7 @@ diff --git a/test/unittest/mock_s3_server.cpp b/test/unittest/mock_s3_server.cpp
 diff --git a/test/unittest/httpfs_refresh_test.cpp b/test/unittest/httpfs_refresh_test.cpp
 --- a/test/unittest/httpfs_refresh_test.cpp
 +++ b/test/unittest/httpfs_refresh_test.cpp
-@@ -12,12 +12,15 @@
+@@ -12,11 +12,14 @@
  #include "duckdb/common/file_system.hpp"
  #include "duckdb/common/string_util.hpp"
  #include "duckdb/main/client_context.hpp"
@@ -130,7 +130,7 @@ diff --git a/test/unittest/httpfs_refresh_test.cpp b/test/unittest/httpfs_refres
  #include <new>
 +#include <thread>
  #include <unordered_map>
-@@ -655,6 +658,20 @@ static idx_t CountObservationsTarget(const vector<MockS3RequestObservation> &ob
+@@ -655,2 +658,14 @@ static idx_t CountObservationsTarget(const vector<MockS3RequestObservation> &ob
  	return result;
  }
 +
