@@ -76,7 +76,8 @@ diff --git a/test/unittest/mock_s3_server.cpp b/test/unittest/mock_s3_server.cpp
 +void MockS3Server::ReleaseMultipartPart() {
 +	impl->ReleaseMultipartPart();
 +}
- diff --git a/test/unittest/httpfs_refresh_test.cpp b/test/unittest/httpfs_refresh_test.cpp
+
+diff --git a/test/unittest/httpfs_refresh_test.cpp b/test/unittest/httpfs_refresh_test.cpp
 --- a/test/unittest/httpfs_refresh_test.cpp
 +++ b/test/unittest/httpfs_refresh_test.cpp
 @@ -19,3 +19,4 @@
