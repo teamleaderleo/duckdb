@@ -9,6 +9,7 @@ on:
       - tools/fieldwork/issue96_remote_publication_probe.py
       - tools/fieldwork/issue96_remote_publication_probe_v2.py
       - tools/fieldwork/issue96_interrupt_phase_probe.py
+      - tools/fieldwork/issue96_interrupt_phase_probe_v2.py
       - tools/fieldwork/requirements-issue96.txt
       - .github/workflows/fieldwork-issue96-remote-publication.yml
   workflow_dispatch:
@@ -60,8 +61,8 @@ jobs:
           done
           cat issue96-minio.log
           exit 1
-      - name: Run focused remote interrupt phase probe
-        run: python tools/fieldwork/issue96_interrupt_phase_probe.py --output issue96-interrupt-phase.json
+      - name: Run corrected focused remote interrupt phase probe
+        run: python tools/fieldwork/issue96_interrupt_phase_probe_v2.py --output issue96-interrupt-phase-v2.json
       - name: Stop MinIO
         if: always()
         run: |
@@ -72,9 +73,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: fieldwork-issue96-interrupt-phase
+          name: fieldwork-issue96-interrupt-phase-v2
           path: |
-            issue96-interrupt-phase.json
+            issue96-interrupt-phase-v2.json
             issue96-minio.log
             issue96-minio-version.txt
             issue96-minio-sha256.txt
