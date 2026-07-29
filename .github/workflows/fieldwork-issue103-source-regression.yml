@@ -34,7 +34,7 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update -y -qq
-          sudo apt-get install -y -qq ninja-build libcurl4-openssl-dev libssl-dev
+          sudo apt-get install -y -qq ninja-build mold libcurl4-openssl-dev libssl-dev
 
       - name: Build DuckDB and HTTPFS unit test
         run: |
