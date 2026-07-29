@@ -1,0 +1,37 @@
+diff --git a/src/include/duckdb/main/client_context.hpp b/src/include/duckdb/main/client_context.hpp
+--- a/src/include/duckdb/main/client_context.hpp
++++ b/src/include/duckdb/main/client_context.hpp
+@@ -104,5 +104,7 @@ public:
+ 	shared_ptr<DatabaseInstance> db;
+ 	//! Interrupt state for the current query
+ 	atomic<ClientInterruptState> interrupt_state {ClientInterruptState::NOT_INTERRUPTED};
++	//! True while operator and file state is being destroyed for a failed query
++	atomic<bool> query_failure_teardown {false};
+ 	//! The deadline for the current query (milliseconds since epoch)
+ 	optional_idx query_deadline;
+@@ -139,6 +141,10 @@ public:
+ 	DUCKDB_API void Interrupt();
+ 	DUCKDB_API bool IsInterrupted() const;
+ 	DUCKDB_API void ClearInterrupt();
++	//! True while EndQueryInternal is cancelling and destroying a failed active query
++	DUCKDB_API bool IsQueryEndingWithFailure() const {
++		return query_failure_teardown.load();
++	}
+ 	//! Suppress all further interrupts for the current query (called after irreversible operations like COMMIT)
+ 	DUCKDB_API void SuppressInterrupts();
+ 	DUCKDB_API void CancelTransaction();
+diff --git a/src/main/client_context.cpp b/src/main/client_context.cpp
+--- a/src/main/client_context.cpp
++++ b/src/main/client_context.cpp
+@@ -342,10 +342,12 @@ ErrorData ClientContext::EndQueryInternal(ClientContextLock &lock, bool success,
+                                           optional_ptr<ErrorData> previous_error) {
++	query_failure_teardown.store(!success);
+ 	if (active_query->executor) {
+ 		active_query->executor->CancelTasks();
+ 	}
+ 	active_query->progress_bar.reset();
+ 	D_ASSERT(active_query.get());
+ 	active_query.reset();
++	query_failure_teardown.store(false);
+ 	query_deadline.SetInvalid();
+ 	query_progress.Initialize();
