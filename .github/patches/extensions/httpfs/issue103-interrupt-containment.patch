@@ -115,11 +115,10 @@ diff --git a/test/unittest/mock_s3_server.cpp b/test/unittest/mock_s3_server.cpp
 diff --git a/test/unittest/httpfs_refresh_test.cpp b/test/unittest/httpfs_refresh_test.cpp
 --- a/test/unittest/httpfs_refresh_test.cpp
 +++ b/test/unittest/httpfs_refresh_test.cpp
-@@ -12,11 +12,14 @@
+@@ -12,11 +12,13 @@
  #include "duckdb/common/file_system.hpp"
  #include "duckdb/common/string_util.hpp"
  #include "duckdb/main/client_context.hpp"
-+#include "duckdb/main/client_context_file_opener.hpp"
  #include "duckdb/main/extension/extension_loader.hpp"
  #include "duckdb/main/secret/secret.hpp"
  
@@ -130,7 +129,7 @@ diff --git a/test/unittest/httpfs_refresh_test.cpp b/test/unittest/httpfs_refres
  #include <new>
 +#include <thread>
  #include <unordered_map>
-@@ -655,2 +658,14 @@ static idx_t CountObservationsTarget(const vector<MockS3RequestObservation> &ob
+@@ -655,2 +657,14 @@ static idx_t CountObservationsTarget(const vector<MockS3RequestObservation> &ob
  	return result;
  }
 +
@@ -145,7 +144,7 @@ diff --git a/test/unittest/httpfs_refresh_test.cpp b/test/unittest/httpfs_refres
 +	} while (std::chrono::steady_clock::now() < deadline);
 +	return false;
 +}
-@@ -947,6 +964,132 @@ static void RunAllTransientRetryScenarios(const string &client_implementation) {
+@@ -947,6 +964,128 @@ static void RunAllTransientRetryScenarios(const string &client_implementation) {
  	}
  }
 +
@@ -171,8 +170,7 @@ diff --git a/test/unittest/httpfs_refresh_test.cpp b/test/unittest/httpfs_refres
 +	ConfigureMultipartContainmentTest(db, con, server);
 +
 +	auto &fs = FileSystem::GetFileSystem(*con.context);
-+	ClientContextFileOpener opener(*con.context);
-+	auto handle = fs.OpenFile(S3_PATH, FileFlags::FILE_FLAGS_WRITE | FileFlags::FILE_FLAGS_FILE_CREATE_NEW, &opener);
++	auto handle = fs.OpenFile(S3_PATH, FileFlags::FILE_FLAGS_WRITE | FileFlags::FILE_FLAGS_FILE_CREATE_NEW);
 +	string payload(6 * 1024 * 1024, 'x');
 +	handle->Write(QueryContext(*con.context), &payload[0], payload.size());
 +	REQUIRE(server.WaitForMultipartPart());
@@ -251,8 +249,7 @@ diff --git a/test/unittest/httpfs_refresh_test.cpp b/test/unittest/httpfs_refres
 +	ConfigureMultipartContainmentTest(db, con, server);
 +
 +	auto &fs = FileSystem::GetFileSystem(*con.context);
-+	ClientContextFileOpener opener(*con.context);
-+	auto handle = fs.OpenFile(S3_PATH, FileFlags::FILE_FLAGS_WRITE | FileFlags::FILE_FLAGS_FILE_CREATE_NEW, &opener);
++	auto handle = fs.OpenFile(S3_PATH, FileFlags::FILE_FLAGS_WRITE | FileFlags::FILE_FLAGS_FILE_CREATE_NEW);
 +	string payload(10 * 1024 * 1024 + 1, 's');
 +	handle->Write(QueryContext(*con.context), &payload[0], payload.size());
 +	handle.reset();
