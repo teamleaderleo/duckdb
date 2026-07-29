@@ -7,6 +7,7 @@ on:
   pull_request:
     paths:
       - tools/fieldwork/issue55_file_sink_probe.py
+      - tools/fieldwork/issue55_file_sink_probe_v2.py
       - tools/fieldwork/requirements-issue55.txt
       - .github/workflows/fieldwork-issue55-file-sink.yml
   workflow_dispatch:
@@ -27,13 +28,13 @@ jobs:
           cache-dependency-path: tools/fieldwork/requirements-issue55.txt
       - name: Install pinned DuckDB client
         run: python -m pip install --require-hashes -r tools/fieldwork/requirements-issue55.txt
-      - name: Run deterministic publication probe
-        run: python tools/fieldwork/issue55_file_sink_probe.py --output issue55-results.json
+      - name: Run corrected deterministic publication probe
+        run: python tools/fieldwork/issue55_file_sink_probe_v2.py --output issue55-results-v2.json
       - name: Upload raw result
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: fieldwork-issue55-results
-          path: issue55-results.json
+          name: fieldwork-issue55-results-v2
+          path: issue55-results-v2.json
           if-no-files-found: error
           retention-days: 30
