@@ -10,6 +10,7 @@ on:
       - tools/fieldwork/issue96_remote_publication_probe_v2.py
       - tools/fieldwork/issue96_interrupt_phase_probe.py
       - tools/fieldwork/issue96_interrupt_phase_probe_v2.py
+      - tools/fieldwork/issue103_s3_interrupt_trace.py
       - tools/fieldwork/requirements-issue96.txt
       - .github/workflows/fieldwork-issue96-remote-publication.yml
   workflow_dispatch:
@@ -61,8 +62,8 @@ jobs:
           done
           cat issue96-minio.log
           exit 1
-      - name: Run corrected focused remote interrupt phase probe
-        run: python tools/fieldwork/issue96_interrupt_phase_probe_v2.py --output issue96-interrupt-phase-v2.json
+      - name: Trace S3 request order around interruption
+        run: python tools/fieldwork/issue103_s3_interrupt_trace.py --output issue103-s3-interrupt-trace.json
       - name: Stop MinIO
         if: always()
         run: |
@@ -73,9 +74,9 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: fieldwork-issue96-interrupt-phase-v2
+          name: fieldwork-issue103-s3-interrupt-trace
           path: |
-            issue96-interrupt-phase-v2.json
+            issue103-s3-interrupt-trace.json
             issue96-minio.log
             issue96-minio-version.txt
             issue96-minio-sha256.txt
