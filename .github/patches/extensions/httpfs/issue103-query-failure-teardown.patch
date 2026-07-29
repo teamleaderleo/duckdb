@@ -26,3 +26,241 @@ diff --git a/src/s3fs.cpp b/src/s3fs.cpp
  			client_context = context->shared_from_this();
  		} else {
  			client_context.reset();
+diff --git a/test/unittest/mock_s3_server.hpp b/test/unittest/mock_s3_server.hpp
+--- a/test/unittest/mock_s3_server.hpp
++++ b/test/unittest/mock_s3_server.hpp
+@@ -51,5 +51,7 @@ struct MockS3ServerConfig {
+ 	bool block_first_range_body_until_second_range = false;
+ 	//! Hold a full GET response body until ReleaseFullGet is called
+ 	bool block_full_get_until_released = false;
++	//! Hold the first multipart part response until ReleaseMultipartPart is called
++	bool block_first_multipart_part_until_released = false;
+ 	//! Number of object HEADs to fail with a 400 before succeeding
+ 	idx_t transient_head_failures = 0;
+@@ -91,6 +93,8 @@ public:
+ 	vector<MockS3RequestObservation> Observations() const;
+ 	bool WaitForFullGet();
+ 	void ReleaseFullGet();
++	bool WaitForMultipartPart();
++	void ReleaseMultipartPart();
+ 
+ private:
+ 	struct Impl;
+diff --git a/test/unittest/mock_s3_server.cpp b/test/unittest/mock_s3_server.cpp
+--- a/test/unittest/mock_s3_server.cpp
++++ b/test/unittest/mock_s3_server.cpp
+@@ -126,5 +126,29 @@ struct MockS3Server::Impl {
+ 		full_get_release.notify_all();
+ 	}
+ 
++	bool WaitForMultipartPart() {
++		std::unique_lock<std::mutex> lock(multipart_part_lock);
++		return multipart_part_started.wait_for(lock, std::chrono::seconds(10),
++		                                       [this]() { return multipart_part_seen; });
++	}
++
++	void ReleaseMultipartPart() {
++		{
++			std::lock_guard<std::mutex> lock(multipart_part_lock);
++			multipart_part_released = true;
++		}
++		multipart_part_release.notify_all();
++	}
++
++	void BlockFirstMultipartPart() {
++		std::unique_lock<std::mutex> lock(multipart_part_lock);
++		if (multipart_part_seen) {
++			return;
++		}
++		multipart_part_seen = true;
++		multipart_part_started.notify_all();
++		multipart_part_release.wait(lock, [this]() { return multipart_part_released; });
++	}
++
+ 	bool MatchesRefreshTarget(const httplib::Request &request) const {
+ 		auto range = GetHeader(request, "Range");
+@@ -450,5 +474,9 @@ struct MockS3Server::Impl {
+ 		server.Get(bucket_path_with_slash, list_objects);
+ 
+ 		server.Put(path, [this](const httplib::Request &request, httplib::Response &response) {
++			if (config.block_first_multipart_part_until_released &&
++			    request.target.find("partNumber") != string::npos) {
++				BlockFirstMultipartPart();
++			}
+ 			if (ShouldRejectStaleCredentials(request)) {
+ 				SendForbidden(request, response);
+@@ -527,4 +555,9 @@ struct MockS3Server::Impl {
+ 	std::condition_variable full_get_release;
+ 	bool full_get_seen = false;
+ 	bool full_get_released = false;
++	std::mutex multipart_part_lock;
++	std::condition_variable multipart_part_started;
++	std::condition_variable multipart_part_release;
++	bool multipart_part_seen = false;
++	bool multipart_part_released = false;
+ };
+@@ -564,4 +597,12 @@ void MockS3Server::ReleaseFullGet() {
+ 	impl->ReleaseFullGet();
+ }
++
++bool MockS3Server::WaitForMultipartPart() {
++	return impl->WaitForMultipartPart();
++}
++
++void MockS3Server::ReleaseMultipartPart() {
++	impl->ReleaseMultipartPart();
++}
+ 
+ } // namespace duckdb
+diff --git a/test/unittest/httpfs_refresh_test.cpp b/test/unittest/httpfs_refresh_test.cpp
+--- a/test/unittest/httpfs_refresh_test.cpp
++++ b/test/unittest/httpfs_refresh_test.cpp
+@@ -12,11 +12,14 @@
+ #include "duckdb/common/file_system.hpp"
+ #include "duckdb/common/string_util.hpp"
+ #include "duckdb/main/client_context.hpp"
+ #include "duckdb/main/extension/extension_loader.hpp"
+ #include "duckdb/main/secret/secret.hpp"
+ 
+ #include <array>
+ #include <atomic>
++#include <chrono>
++#include <future>
+ #include <mutex>
+ #include <new>
++#include <thread>
+ #include <unordered_map>
+@@ -947,6 +950,131 @@ static void RunAllTransientRetryScenarios(const string &client_implementation) {
+ 	}
+ }
++
++static bool WaitForObservationTarget(MockS3Server &server, const string &method, int status,
++	                                 const string &target_contains) {
++	auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
++	do {
++		if (CountObservationsTarget(server.Observations(), method, status, target_contains) > 0) {
++			return true;
++		}
++		std::this_thread::sleep_for(std::chrono::milliseconds(10));
++	} while (std::chrono::steady_clock::now() < deadline);
++	return false;
++}
++
++static void ConfigureQueryTeardownTest(DuckDB &db, Connection &con, MockS3Server &server) {
++	ConfigureRefreshTest(db, con, server, "httplib", false, false);
++	RequireQueryOk(con, "SET threads=1");
++	RequireQueryOk(con, "SET s3_uploader_max_filesize='100MB'");
++	RequireQueryOk(con, "SET s3_uploader_max_parts_per_file=20");
++	RequireQueryOk(con, "SET s3_uploader_thread_limit=1");
++}
++
++static unique_ptr<QueryResult> RunBlockedCopy(Connection &con, MockS3Server &server, bool use_deadline) {
++	if (use_deadline) {
++		RequireQueryOk(con, "SET max_execution_time=5000");
++	}
++	unique_ptr<QueryResult> query_result;
++	std::promise<void> finished;
++	auto finished_future = finished.get_future();
++	std::thread query_thread([&]() {
++		query_result = con.Query(R"(
++COPY (
++	SELECT i::BIGINT AS i, repeat('x', 128) AS payload
++	FROM range(100000000) t(i)
++) TO 's3://refresh-bucket/object.bin' (FORMAT CSV)
++)");
++		finished.set_value();
++	});
++
++	auto part_started = server.WaitForMultipartPart();
++	if (!part_started) {
++		con.Interrupt();
++		server.ReleaseMultipartPart();
++		query_thread.join();
++		REQUIRE(part_started);
++	}
++	if (use_deadline) {
++		std::this_thread::sleep_for(std::chrono::milliseconds(5500));
++	} else {
++		con.Interrupt();
++	}
++	server.ReleaseMultipartPart();
++
++	auto returned = finished_future.wait_for(std::chrono::seconds(10)) == std::future_status::ready;
++	if (!returned) {
++		con.Interrupt();
++	}
++	query_thread.join();
++	REQUIRE(returned);
++	return query_result;
++}
++
++static void RequireFailedCopyDidNotComplete(MockS3Server &server, Connection &con,
++	                                        unique_ptr<QueryResult> query_result, const string &error_fragment) {
++	REQUIRE(query_result);
++	REQUIRE(query_result->HasError());
++	auto error = StringUtil::Lower(query_result->GetError());
++	REQUIRE(error.find(StringUtil::Lower(error_fragment)) != string::npos);
++	RequireQueryOk(con, "SELECT 103");
++	REQUIRE(WaitForObservationTarget(server, "PUT", 200, "partNumber"));
++	auto observations = server.Observations();
++	INFO(MockS3DescribeObservations(observations));
++	REQUIRE(CountObservationsTarget(observations, "POST", 200, "uploadId") == 0);
++}
++
++static void RunFailedQueryTeardownScenario(bool use_deadline) {
++	MockS3ServerConfig config;
++	config.bucket = BUCKET;
++	config.object_key = OBJECT_KEY;
++	config.stale_key_id = STALE_KEY_ID;
++	config.refresh_target = MockS3RefreshTarget::DELETE_OBJECT;
++	config.block_first_multipart_part_until_released = true;
++	MockS3Server server(std::move(config));
++
++	DuckDB db(nullptr);
++	Connection con(db);
++	ConfigureQueryTeardownTest(db, con, server);
++	auto result = RunBlockedCopy(con, server, use_deadline);
++	RequireFailedCopyDidNotComplete(server, con, std::move(result),
++	                                use_deadline ? "maximum execution time" : "interrupt");
++}
++
++static void RunImplicitMultipartCloseSuccessScenario() {
++	MockS3ServerConfig config;
++	config.bucket = BUCKET;
++	config.object_key = OBJECT_KEY;
++	config.stale_key_id = STALE_KEY_ID;
++	config.refresh_target = MockS3RefreshTarget::DELETE_OBJECT;
++	MockS3Server server(std::move(config));
++
++	DuckDB db(nullptr);
++	Connection con(db);
++	ConfigureQueryTeardownTest(db, con, server);
++
++	auto &fs = FileSystem::GetFileSystem(*con.context);
++	auto handle = fs.OpenFile(S3_PATH, FileFlags::FILE_FLAGS_WRITE | FileFlags::FILE_FLAGS_FILE_CREATE_NEW);
++	string payload(10 * 1024 * 1024 + 1, 's');
++	handle->Write(QueryContext(*con.context), &payload[0], payload.size());
++	handle.reset();
++
++	auto observations = server.Observations();
++	INFO(MockS3DescribeObservations(observations));
++	REQUIRE(CountObservationsTarget(observations, "PUT", 200, "partNumber") > 0);
++	REQUIRE(CountObservationsTarget(observations, "POST", 200, "uploadId") == 1);
++}
+ 
+ } // namespace
++
++TEST_CASE("HTTPFS suppresses S3 multipart completion during failed query teardown",
++	      "[httpfs][s3][upload][interrupt][timeout]") {
++	SECTION("manual interruption does not complete multipart upload") {
++		RunFailedQueryTeardownScenario(false);
++	}
++	SECTION("query deadline does not complete multipart upload") {
++		RunFailedQueryTeardownScenario(true);
++	}
++	SECTION("successful implicit destruction still completes multipart upload") {
++		RunImplicitMultipartCloseSuccessScenario();
++	}
++}
+ 
+ TEST_CASE("HTTPFS retries transient S3 RequestTimeout across request types", "[httpfs][s3][upload]") {
