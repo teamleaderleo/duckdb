@@ -1,0 +1,72 @@
+name: Fieldwork issue 103 source regression
+
+on:
+  push:
+    branches:
+      - fieldwork/96-remote-publication
+    paths:
+      - .github/patches/extensions/httpfs/issue103-interrupt-regression.patch
+      - .github/config/extensions/httpfs.cmake
+      - .github/workflows/fieldwork-issue103-source-regression.yml
+  pull_request:
+    paths:
+      - .github/patches/extensions/httpfs/issue103-interrupt-regression.patch
+      - .github/config/extensions/httpfs.cmake
+      - .github/workflows/fieldwork-issue103-source-regression.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  regression:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      GEN: ninja
+      CORE_EXTENSIONS: "httpfs;parquet"
+      BUILD_UNITTESTS: 1
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -y -qq
+          sudo apt-get install -y -qq ninja-build libcurl4-openssl-dev libssl-dev
+
+      - name: Build DuckDB and HTTPFS unit test
+        run: |
+          make debug
+          cmake --build build/debug --target unittest_httpfs --parallel 2
+
+      - name: Confirm current source fails the new regression
+        shell: bash
+        run: |
+          set +e
+          ./build/debug/test/unittest_httpfs \
+            "HTTPFS does not complete S3 multipart upload after COPY interruption" \
+            2>&1 | tee issue103-source-regression.log
+          test_status=${PIPESTATUS[0]}
+          set -e
+          if test "$test_status" -eq 0; then
+            echo "The regression unexpectedly passed; current behavior changed or the fixture missed the boundary."
+            exit 1
+          fi
+          grep -F "HTTPFS does not complete S3 multipart upload after COPY interruption" \
+            issue103-source-regression.log
+          grep -F "failed" issue103-source-regression.log
+          printf '{"expected_current_failure":true,"test_status":%s}\n' "$test_status" \
+            > issue103-source-regression-summary.json
+
+      - name: Upload source-level evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fieldwork-issue103-source-regression
+          path: |
+            issue103-source-regression.log
+            issue103-source-regression-summary.json
+          if-no-files-found: warn
+          retention-days: 30
