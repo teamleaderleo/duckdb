@@ -1,0 +1,81 @@
+name: Fieldwork issue 96 remote publication
+
+on:
+  push:
+    branches:
+      - fieldwork/96-remote-publication
+  pull_request:
+    paths:
+      - tools/fieldwork/issue96_remote_publication_probe.py
+      - tools/fieldwork/requirements-issue96.txt
+      - .github/workflows/fieldwork-issue96-remote-publication.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      MINIO_ROOT_USER: fieldwork96
+      MINIO_ROOT_PASSWORD: fieldwork96-secret
+      ISSUE96_S3_ENDPOINT: http://127.0.0.1:9000
+      ISSUE96_MINIO_RELEASE: RELEASE.2025-07-23T15-54-02Z
+      AWS_EC2_METADATA_DISABLED: 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: tools/fieldwork/requirements-issue96.txt
+      - name: Install pinned Python dependencies
+        run: |
+          python -m pip install -r tools/fieldwork/requirements-issue96.txt
+          python -m pip freeze | sort | tee issue96-pip-freeze.txt
+      - name: Start pinned MinIO server
+        run: |
+          curl --fail --silent --show-error --location \
+            --output minio \
+            "https://dl.min.io/server/minio/release/linux-amd64/archive/minio.${ISSUE96_MINIO_RELEASE}"
+          chmod +x minio
+          sha256sum minio | tee issue96-minio-sha256.txt
+          echo "ISSUE96_MINIO_SHA256=$(cut -d' ' -f1 issue96-minio-sha256.txt)" >> "$GITHUB_ENV"
+          ./minio --version | tee issue96-minio-version.txt
+          mkdir -p /tmp/fieldwork-issue96-minio
+          nohup ./minio server /tmp/fieldwork-issue96-minio \
+            --address 127.0.0.1:9000 \
+            --console-address 127.0.0.1:9001 \
+            > issue96-minio.log 2>&1 &
+          echo $! > issue96-minio.pid
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent http://127.0.0.1:9000/minio/health/live >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          cat issue96-minio.log
+          exit 1
+      - name: Run deterministic remote publication probe
+        run: python tools/fieldwork/issue96_remote_publication_probe.py --output issue96-results.json
+      - name: Stop MinIO
+        if: always()
+        run: |
+          if test -f issue96-minio.pid; then
+            kill "$(cat issue96-minio.pid)" || true
+          fi
+      - name: Upload raw evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fieldwork-issue96-results
+          path: |
+            issue96-results.json
+            issue96-minio.log
+            issue96-minio-version.txt
+            issue96-minio-sha256.txt
+            issue96-pip-freeze.txt
+          if-no-files-found: error
+          retention-days: 30
