@@ -15,6 +15,10 @@ on:
       - .github/workflows/fieldwork-issue103-containment-clean.yml
   workflow_dispatch:
 
+concurrency:
+  group: fieldwork-issue103-clean-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
