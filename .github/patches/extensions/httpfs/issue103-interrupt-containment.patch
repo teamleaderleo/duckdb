@@ -129,8 +129,8 @@ diff --git a/test/unittest/httpfs_refresh_test.cpp b/test/unittest/httpfs_refres
  #include <new>
 +#include <thread>
  #include <unordered_map>
-@@ -655,2 +657,14 @@ static idx_t CountObservationsTarget(const vector<MockS3RequestObservation> &ob
- 	return result;
+@@ -947,6 +949,140 @@ static void RunAllTransientRetryScenarios(const string &client_implementation) {
+ 	}
  }
 +
 +static bool WaitForObservationTarget(MockS3Server &server, const string &method, int status,
@@ -144,9 +144,6 @@ diff --git a/test/unittest/httpfs_refresh_test.cpp b/test/unittest/httpfs_refres
 +	} while (std::chrono::steady_clock::now() < deadline);
 +	return false;
 +}
-@@ -947,6 +964,128 @@ static void RunAllTransientRetryScenarios(const string &client_implementation) {
- 	}
- }
 +
 +static void ConfigureMultipartContainmentTest(DuckDB &db, Connection &con, MockS3Server &server) {
 +	ConfigureRefreshTest(db, con, server, "httplib", false, false);
