@@ -28,7 +28,10 @@ jobs:
           fetch-depth: 0
 
       - name: Apply core query-failure teardown prototype
-        run: git apply --check tools/fieldwork/issue103-core-query-failure-teardown.patch && git apply tools/fieldwork/issue103-core-query-failure-teardown.patch
+        run: |
+          # Keep the core and extension experiments independently reviewable.
+          git apply --check tools/fieldwork/issue103-core-query-failure-teardown.patch
+          git apply tools/fieldwork/issue103-core-query-failure-teardown.patch
 
       - name: Install build dependencies
         run: |
