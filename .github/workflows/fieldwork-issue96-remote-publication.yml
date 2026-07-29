@@ -17,6 +17,10 @@ on:
       - .github/workflows/fieldwork-issue96-remote-publication.yml
   workflow_dispatch:
 
+concurrency:
+  group: fieldwork-issue103-cancellation-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
