@@ -1,7 +1,7 @@
 diff --git a/test/unittest/httpfs_refresh_test.cpp b/test/unittest/httpfs_refresh_test.cpp
 --- a/test/unittest/httpfs_refresh_test.cpp
 +++ b/test/unittest/httpfs_refresh_test.cpp
-@@ -986,5 +986,5 @@ static unique_ptr<QueryResult> RunBlockedCopy(Connection &con, MockS3Server &serv
+@@ -986,6 +986,6 @@ static unique_ptr<QueryResult> RunBlockedCopy(Connection &con, MockS3Server &serv
  	std::thread query_thread([&]() {
  		query_result = con.Query(R"(
  COPY (
