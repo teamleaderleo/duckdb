@@ -32,10 +32,17 @@ FROM parquet_scan('{TEST_DIR}/hive-default-partition-collision/**/*.parquet', fi
 ----
 2
 
-# Compatibility control: raw Hive default-marker directories still decode as SQL NULL.
+# Compatibility control: SQL NULL writes the raw Hive marker and reads back as SQL NULL.
 statement ok
-COPY (SELECT 3 AS id) TO '{TEST_DIR}/hive-default-partition-existing/p=__HIVE_DEFAULT_PARTITION__/data.parquet'
-(FORMAT PARQUET);
+COPY (SELECT NULL::VARCHAR AS p, 3 AS id)
+TO '{TEST_DIR}/hive-default-partition-existing'
+(FORMAT PARQUET, PARTITION_BY (p), OVERWRITE);
+
+query I
+SELECT count(*)
+FROM glob('{TEST_DIR}/hive-default-partition-existing/p=__HIVE_DEFAULT_PARTITION__/*.parquet');
+----
+1
 
 query II
 SELECT (p IS NULL)::INTEGER AS is_null, id
