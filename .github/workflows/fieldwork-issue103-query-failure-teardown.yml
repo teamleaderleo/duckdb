@@ -1,0 +1,168 @@
+name: Fieldwork issue 103 query-failure teardown
+
+on:
+  push:
+    branches:
+      - fieldwork/103-query-failure-teardown
+    paths:
+      - tools/fieldwork/issue103-core-query-failure-teardown.patch
+      - .github/patches/extensions/httpfs/0001-remove-pessimizing-move.patch
+      - .github/patches/extensions/httpfs/issue103-query-failure-teardown.patch
+      - .github/patches/extensions/httpfs/issue103-query-failure-workload.patch
+      - .github/workflows/fieldwork-issue103-query-failure-teardown.yml
+  pull_request:
+    paths:
+      - tools/fieldwork/issue103-core-query-failure-teardown.patch
+      - .github/patches/extensions/httpfs/0001-remove-pessimizing-move.patch
+      - .github/patches/extensions/httpfs/issue103-query-failure-teardown.patch
+      - .github/patches/extensions/httpfs/issue103-query-failure-workload.patch
+      - .github/workflows/fieldwork-issue103-query-failure-teardown.yml
+  workflow_dispatch:
+
+concurrency:
+  group: fieldwork-issue103-query-failure-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  HTTPFS_COMMIT: df92a34d29eb589591adfadba89fa8df874e54ea
+
+jobs:
+  regression:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply core query-failure teardown prototype
+        run: |
+          git apply --check --recount tools/fieldwork/issue103-core-query-failure-teardown.patch
+          git apply --recount tools/fieldwork/issue103-core-query-failure-teardown.patch
+          git diff --check
+
+      - name: Stage pinned HTTPFS prototype
+        run: |
+          set -euxo pipefail
+          mkdir -p .fieldwork/httpfs
+          git -C .fieldwork/httpfs init
+          git -C .fieldwork/httpfs remote add origin https://github.com/duckdb/duckdb-httpfs.git
+          git -C .fieldwork/httpfs fetch --depth=1 origin "$HTTPFS_COMMIT"
+          git -C .fieldwork/httpfs checkout --detach FETCH_HEAD
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('.github/patches/extensions/httpfs/issue103-query-failure-teardown.patch')
+          text = path.read_text(encoding='utf-8')
+          exact_replacements = [
+              (
+                  '+\tConfigureQueryTeardownTest(db, con, server);\n+\n+\tauto &fs =',
+                  '+\tConfigureQueryTeardownTest(db, con, server);\n+\tRequireQueryOk(con, "BEGIN TRANSACTION");\n+\n+\tauto &fs =',
+                  1,
+                  'successful-handle transaction setup',
+              ),
+              (
+                  '+\thandle.reset();\n+\n+\tauto observations =',
+                  '+\thandle.reset();\n+\tRequireQueryOk(con, "COMMIT");\n+\n+\tauto observations =',
+                  1,
+                  'successful-handle transaction cleanup',
+              ),
+          ]
+          for old, new, expected, label in exact_replacements:
+              actual = text.count(old)
+              if actual != expected:
+                  raise SystemExit(f'{label}: expected {expected} matches, found {actual}')
+              text = text.replace(old, new)
+
+          old_footer = (
+              '@@ -564,4 +597,12 @@ void MockS3Server::ReleaseFullGet() {\n'
+              ' \timpl->ReleaseFullGet();\n'
+              ' }\n'
+              '+\n'
+              '+bool MockS3Server::WaitForMultipartPart() {\n'
+              '+\treturn impl->WaitForMultipartPart();\n'
+              '+}\n'
+              '+\n'
+              '+void MockS3Server::ReleaseMultipartPart() {\n'
+              '+\timpl->ReleaseMultipartPart();\n'
+              '+}\n'
+              ' \n'
+              ' } // namespace duckdb\n'
+          )
+          new_footer = (
+              '@@ -566,4 +599,12 @@ void MockS3Server::ReleaseFullGet() {\n'
+              ' \timpl->ReleaseFullGet();\n'
+              ' }\n'
+              '+\n'
+              '+bool MockS3Server::WaitForMultipartPart() {\n'
+              '+\treturn impl->WaitForMultipartPart();\n'
+              '+}\n'
+              '+\n'
+              '+void MockS3Server::ReleaseMultipartPart() {\n'
+              '+\timpl->ReleaseMultipartPart();\n'
+              '+}\n'
+              ' \n'
+              ' string MockS3RefreshTargetName(MockS3RefreshTarget target) {\n'
+          )
+          if text.count(old_footer) != 1:
+              raise SystemExit('query-failure mock footer hunk changed')
+          path.write_text(text.replace(old_footer, new_footer, 1), encoding='utf-8')
+          PY
+
+          for patch in \
+            .github/patches/extensions/httpfs/0001-remove-pessimizing-move.patch \
+            .github/patches/extensions/httpfs/issue103-query-failure-teardown.patch \
+            .github/patches/extensions/httpfs/issue103-query-failure-workload.patch
+          do
+            git -C .fieldwork/httpfs apply --check --recount "$GITHUB_WORKSPACE/$patch"
+            git -C .fieldwork/httpfs apply --recount "$GITHUB_WORKSPACE/$patch"
+          done
+          git -C .fieldwork/httpfs diff --check
+
+          cat > .fieldwork/httpfs-local.cmake <<'CMAKE'
+          duckdb_extension_load(httpfs
+              LOAD_TESTS
+              SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}/httpfs"
+              EXTENSION_VERSION df92a34d29eb589591adfadba89fa8df874e54ea
+          )
+          CMAKE
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -y -qq
+          sudo apt-get install -y -qq ninja-build mold libcurl4-openssl-dev libssl-dev
+
+      - name: Configure DuckDB with staged HTTPFS
+        run: |
+          cmake -S . -B build/issue103-query-failure -G Ninja \
+            -DFORCE_COLORED_OUTPUT=1 \
+            -DDUCKDB_EXTENSION_CONFIGS="$GITHUB_WORKSPACE/.fieldwork/httpfs-local.cmake" \
+            '-DBUILD_EXTENSIONS=;parquet' \
+            -DDEBUG_MOVE=1 \
+            -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build focused HTTPFS unit test
+        run: cmake --build build/issue103-query-failure --target unittest_httpfs --parallel 2
+
+      - name: Run failed-query teardown controls
+        run: |
+          set -o pipefail
+          ./build/issue103-query-failure/test/unittest_httpfs \
+            "HTTPFS suppresses S3 multipart completion during failed query teardown" \
+            2>&1 | tee issue103-query-failure-teardown.log
+          printf '{"query_failure_teardown_passed":true}\n' > issue103-query-failure-teardown-summary.json
+
+      - name: Upload prototype evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fieldwork-issue103-query-failure-teardown
+          path: |
+            issue103-query-failure-teardown.log
+            issue103-query-failure-teardown-summary.json
+          if-no-files-found: warn
+          retention-days: 30
