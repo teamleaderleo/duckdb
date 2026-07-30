@@ -1,4 +1,4 @@
-name: Fieldwork Hive default-partition literal
+name: Fieldwork Hive default-partition literal candidate
 
 on:
   push:
