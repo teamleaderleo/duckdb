@@ -1,0 +1,58 @@
+# name: test/sql/window/test_rows_following_overflow.test
+# description: ROWS FOLLOWING offsets beyond INT64 range must remain empty
+# group: [window]
+
+# Exact public reproduction. Row zero reaches the last representable start;
+# later rows overflow the start addition. Every frame is beyond the partition.
+query III
+SELECT i,
+       count(*) OVER (
+         ORDER BY i
+         ROWS BETWEEN 9223372036854775807 FOLLOWING
+                  AND 9223372036854775807 FOLLOWING
+       ) AS cnt,
+       list(i) OVER (
+         ORDER BY i
+         ROWS BETWEEN 9223372036854775807 FOLLOWING
+                  AND 9223372036854775807 FOLLOWING
+       ) AS members
+FROM range(3) t(i)
+ORDER BY i;
+----
+0	0	NULL
+1	0	NULL
+2	0	NULL
+
+# Ordinary bounded FOLLOWING behavior must remain unchanged.
+query III
+SELECT i,
+       count(*) OVER (ORDER BY i ROWS BETWEEN 1 FOLLOWING AND 1 FOLLOWING) AS cnt,
+       list(i) OVER (ORDER BY i ROWS BETWEEN 1 FOLLOWING AND 1 FOLLOWING) AS members
+FROM range(3) t(i)
+ORDER BY i;
+----
+0	1	[1]
+1	1	[2]
+2	0	NULL
+
+# Overflow must saturate independently to each partition end rather than
+# expanding later rows to their whole partition.
+query TIII
+SELECT g, i,
+       count(*) OVER (
+         PARTITION BY g ORDER BY i
+         ROWS BETWEEN 9223372036854775807 FOLLOWING
+                  AND 9223372036854775807 FOLLOWING
+       ) AS cnt,
+       sum(i) OVER (
+         PARTITION BY g ORDER BY i
+         ROWS BETWEEN 9223372036854775807 FOLLOWING
+                  AND 9223372036854775807 FOLLOWING
+       ) AS total
+FROM (VALUES ('a', 0), ('a', 1), ('b', 0), ('b', 1)) v(g, i)
+ORDER BY g, i;
+----
+a	0	0	NULL
+a	1	0	NULL
+b	0	0	NULL
+b	1	0	NULL
