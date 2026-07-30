@@ -48,11 +48,15 @@ jobs:
 
           path = Path('.github/patches/extensions/httpfs/issue103-query-failure-teardown.patch')
           text = path.read_text(encoding='utf-8')
-          old = '@@ -947,6 +950,131 @@'
-          new = '@@ -947,6 +950,133 @@'
-          if text.count(old) != 1:
-              raise SystemExit('query-failure patch hunk header changed')
-          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          replacements = {
+              '@@ -12,11 +12,14 @@': '@@ -10,11 +10,14 @@',
+              '@@ -947,6 +950,131 @@': '@@ -947,6 +950,133 @@',
+          }
+          for old, new in replacements.items():
+              if text.count(old) != 1:
+                  raise SystemExit(f'query-failure patch header changed: {old}')
+              text = text.replace(old, new, 1)
+          path.write_text(text, encoding='utf-8')
           PY
 
       - name: Install build dependencies
