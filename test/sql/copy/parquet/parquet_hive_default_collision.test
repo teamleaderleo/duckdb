@@ -20,9 +20,17 @@ ORDER BY id
 0	__HIVE_DEFAULT_PARTITION__	1
 1	NULL	2
 
+# SQL NULL retains the raw marker for Hive compatibility.
 query I
 SELECT count(*)
 FROM glob('{TEST_DIR}/hive-default-partition-collision/p=__HIVE_DEFAULT_PARTITION__/*.parquet');
+----
+1
+
+# The literal reserved value uses an escaped directory and decodes on read.
+query I
+SELECT count(*)
+FROM glob('{TEST_DIR}/hive-default-partition-collision/p=%5F_HIVE_DEFAULT_PARTITION__/*.parquet');
 ----
 1
 
