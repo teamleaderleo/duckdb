@@ -31,6 +31,20 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Repair generated HTTPFS patch metadata
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('.github/patches/extensions/httpfs/issue103-interrupt-containment.patch')
+          text = path.read_text(encoding='utf-8')
+          old = '@@ -947,6 +949,140 @@'
+          new = '@@ -947,6 +949,142 @@'
+          if text.count(old) != 1:
+              raise SystemExit('containment patch hunk header changed')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+
       - name: Install build dependencies
         run: |
           sudo apt-get update -y -qq
