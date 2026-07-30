@@ -1,0 +1,53 @@
+name: Fieldwork Hive default partition literal escape
+
+on:
+  pull_request:
+    paths:
+      - 'src/execution/operator/persistent/physical_copy_to_file.cpp'
+      - 'test/sql/copy/parquet/parquet_hive_default_collision.test'
+      - 'fieldwork/hive_default_partition_literal_escape.patch'
+      - '.github/workflows/fieldwork-hive-default-partition-literal-escape.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out exact owned head
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Apply exact source repair
+        run: |
+          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha || github.sha }}"
+          git apply --check fieldwork/hive_default_partition_literal_escape.patch
+          git apply fieldwork/hive_default_partition_literal_escape.patch
+          git diff --check
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -y -qq
+          sudo apt-get install -y -qq ninja-build
+
+      - name: Configure minimal pinned build
+        run: |
+          cmake -S . -B build/fieldwork -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DBUILD_EXTENSIONS=parquet \
+            -DFORCE_COLORED_OUTPUT=1
+
+      - name: Build native test runner
+        run: cmake --build build/fieldwork --target unittest --parallel 2
+
+      - name: Run collision repair and compatibility control
+        run: ./build/fieldwork/test/run 'test/sql/copy/parquet/parquet_hive_default_collision.test'
