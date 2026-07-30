@@ -2,8 +2,9 @@
 # description: ROWS FOLLOWING offsets beyond INT64 range must remain empty
 # group: [window]
 
-# Exact public reproduction. Row zero reaches the last representable start;
-# later rows overflow the start addition. Every frame is beyond the partition.
+# Exact public reproduction on the immutable clean source base. Row zero reaches
+# the last representable start; later rows overflow the start addition. Every
+# frame is beyond the partition.
 query III
 SELECT i,
        count(*) OVER (
