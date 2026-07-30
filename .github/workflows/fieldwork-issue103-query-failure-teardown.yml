@@ -123,14 +123,6 @@ jobs:
           if text.count(old_footer) != 1:
               raise SystemExit('query-failure mock footer hunk changed')
           path.write_text(text.replace(old_footer, new_footer, 1), encoding='utf-8')
-
-          workload_path = Path('.github/patches/extensions/httpfs/issue103-query-failure-workload.patch')
-          workload = workload_path.read_text(encoding='utf-8')
-          old_workload = '+\tFROM range(100000) t(i)'
-          new_workload = '+\tFROM range(10000) t(i)'
-          if workload.count(old_workload) != 1:
-              raise SystemExit('bounded workload anchor changed')
-          workload_path.write_text(workload.replace(old_workload, new_workload, 1), encoding='utf-8')
           PY
 
           for patch in \
