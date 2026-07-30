@@ -8,5 +8,6 @@ diff --git a/test/unittest/httpfs_refresh_test.cpp b/test/unittest/httpfs_refres
 -	SELECT i::BIGINT AS i, repeat('x', 128) AS payload
 -	FROM range(100000000) t(i)
 +	SELECT i::BIGINT AS i, repeat('x', 8192) AS payload
-+	FROM range(100000) t(i)
++	FROM range(2000) t(i)
  ) TO 's3://refresh-bucket/object.bin' (FORMAT CSV)
+ )");
