@@ -38,15 +38,33 @@ jobs:
 
           path = Path('.github/patches/extensions/httpfs/issue103-interrupt-containment.patch')
           text = path.read_text(encoding='utf-8')
-          replacements = {
-              '@@ -12,11 +12,13 @@': '@@ -10,11 +10,13 @@',
-              '@@ -947,6 +949,140 @@': '@@ -947,6 +949,142 @@',
-          }
-          for old, new in replacements.items():
-              if text.count(old) != 1:
-                  raise SystemExit(f'containment patch header changed: {old}')
-              text = text.replace(old, new, 1)
-          path.write_text(text, encoding='utf-8')
+          old_includes = '''@@ -12,11 +12,13 @@
+ #include "duckdb/common/file_system.hpp"
+ #include "duckdb/common/string_util.hpp"
+ #include "duckdb/main/client_context.hpp"
+ #include "duckdb/main/extension/extension_loader.hpp"
+ #include "duckdb/main/secret/secret.hpp"
+ 
+ #include <array>
+ #include <atomic>
++#include <future>
+ #include <mutex>
+ #include <new>
++#include <thread>
+ #include <unordered_map>
+'''
+          new_includes = '''@@ -21,0 +22,2 @@
++#include <future>
++#include <thread>
+'''
+          if text.count(old_includes) != 1:
+              raise SystemExit('containment include hunk changed')
+          text = text.replace(old_includes, new_includes, 1)
+          old_tail = '@@ -947,6 +949,140 @@'
+          new_tail = '@@ -947,6 +949,142 @@'
+          if text.count(old_tail) != 1:
+              raise SystemExit('containment tail hunk changed')
+          path.write_text(text.replace(old_tail, new_tail, 1), encoding='utf-8')
           PY
 
       - name: Install build dependencies
