@@ -1,0 +1,53 @@
+name: Fieldwork window ROWS FOLLOWING overflow repair
+
+on:
+  pull_request:
+    paths:
+      - 'src/function/window/window_boundaries_state.cpp'
+      - 'test/sql/window/test_rows_following_overflow.test'
+      - 'fieldwork/window_rows_following_overflow.patch'
+      - '.github/workflows/fieldwork-window-rows-following-overflow-repair.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - name: Check out exact owned head
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Apply exact source repair
+        run: |
+          test "$(git rev-parse HEAD)" = "${{ github.event.pull_request.head.sha || github.sha }}"
+          git apply --check fieldwork/window_rows_following_overflow.patch
+          git apply fieldwork/window_rows_following_overflow.patch
+          git diff --check
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -y -qq
+          sudo apt-get install -y -qq ninja-build
+
+      - name: Configure minimal pinned build
+        run: |
+          cmake -S . -B build/fieldwork -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DBUILD_EXTENSIONS='' \
+            -DFORCE_COLORED_OUTPUT=1
+
+      - name: Build native test runner
+        run: cmake --build build/fieldwork --target unittest --parallel 2
+
+      - name: Run overflow repair and ordinary control
+        run: ./build/fieldwork/test/run 'test/sql/window/test_rows_following_overflow.test'
