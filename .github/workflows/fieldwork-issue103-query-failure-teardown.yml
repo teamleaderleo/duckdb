@@ -60,18 +60,6 @@ jobs:
           text = path.read_text(encoding='utf-8')
           exact_replacements = [
               (
-                  '+\t\tRequireQueryOk(con, "SET max_execution_time=5000");',
-                  '+\t\tRequireQueryOk(con, "SET max_execution_time=1000");',
-                  1,
-                  'deadline setting',
-              ),
-              (
-                  '+\t\tstd::this_thread::sleep_for(std::chrono::milliseconds(5500));',
-                  '+\t\tstd::this_thread::sleep_for(std::chrono::milliseconds(1500));',
-                  1,
-                  'deadline wait',
-              ),
-              (
                   '+\tConfigureQueryTeardownTest(db, con, server);\n+\n+\tauto &fs =',
                   '+\tConfigureQueryTeardownTest(db, con, server);\n+\tRequireQueryOk(con, "BEGIN TRANSACTION");\n+\n+\tauto &fs =',
                   1,
