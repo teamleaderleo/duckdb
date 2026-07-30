@@ -41,6 +41,20 @@ jobs:
           git apply --check tools/fieldwork/issue103-core-query-failure-teardown.patch
           git apply tools/fieldwork/issue103-core-query-failure-teardown.patch
 
+      - name: Repair generated HTTPFS patch metadata
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('.github/patches/extensions/httpfs/issue103-query-failure-teardown.patch')
+          text = path.read_text(encoding='utf-8')
+          old = '@@ -947,6 +950,131 @@'
+          new = '@@ -947,6 +950,133 @@'
+          if text.count(old) != 1:
+              raise SystemExit('query-failure patch hunk header changed')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+
       - name: Install build dependencies
         run: |
           sudo apt-get update -y -qq
