@@ -1,0 +1,44 @@
+# name: test/sql/copy/parquet/parquet_hive_default_collision.test
+# description: Preserve SQL NULL and the literal Hive default-partition marker as distinct partition values
+# group: [parquet]
+
+require parquet
+
+statement ok
+CREATE TABLE hive_default_partition_collision AS
+SELECT * FROM (VALUES ('__HIVE_DEFAULT_PARTITION__', 1), (NULL, 2)) v(p, id);
+
+statement ok
+COPY hive_default_partition_collision TO '{TEST_DIR}/hive-default-partition-collision'
+(FORMAT PARQUET, PARTITION_BY (p), OVERWRITE);
+
+query III
+SELECT (p IS NULL)::INTEGER AS is_null, p, id
+FROM parquet_scan('{TEST_DIR}/hive-default-partition-collision/**/*.parquet', hive_partitioning=1)
+ORDER BY id
+----
+0	__HIVE_DEFAULT_PARTITION__	1
+1	NULL	2
+
+query I
+SELECT count(*)
+FROM glob('{TEST_DIR}/hive-default-partition-collision/p=__HIVE_DEFAULT_PARTITION__/*.parquet');
+----
+1
+
+query I
+SELECT count(DISTINCT file)
+FROM parquet_scan('{TEST_DIR}/hive-default-partition-collision/**/*.parquet', filename=1);
+----
+2
+
+# Existing raw Hive default-marker directories must continue to read as SQL NULL.
+statement ok
+COPY (SELECT 3 AS id) TO '{TEST_DIR}/hive-default-partition-existing/p=__HIVE_DEFAULT_PARTITION__/data.parquet'
+(FORMAT PARQUET);
+
+query II
+SELECT (p IS NULL)::INTEGER AS is_null, id
+FROM parquet_scan('{TEST_DIR}/hive-default-partition-existing/**/*.parquet', hive_partitioning=1)
+----
+1	3
