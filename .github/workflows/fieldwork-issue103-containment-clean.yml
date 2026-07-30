@@ -40,7 +40,8 @@ jobs:
         run: |
           cmake -S . -B build/issue103-clean -G Ninja \
             -DFORCE_COLORED_OUTPUT=1 \
-            '-DBUILD_EXTENSIONS=;httpfs;parquet' \
+            -DDUCKDB_EXTENSION_CONFIGS=.github/config/extensions/httpfs.cmake \
+            '-DBUILD_EXTENSIONS=;parquet' \
             -DDEBUG_MOVE=1 \
             -DCMAKE_BUILD_TYPE=Debug
 
