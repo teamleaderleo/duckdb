@@ -1,14 +1,7 @@
 name: Fieldwork Hive default-partition literal candidate
 
 on:
-  push:
-    branches:
-      - fieldwork/hive-default-partition-literal-escape
-    paths:
-      - '.github/workflows/fieldwork-hive-default-partition-literal.yml'
   pull_request:
-    paths:
-      - '.github/workflows/fieldwork-hive-default-partition-literal.yml'
   workflow_dispatch:
 
 permissions:
