@@ -48,7 +48,40 @@ jobs:
 
           path = Path('.github/patches/extensions/httpfs/issue103-interrupt-containment.patch')
           text = path.read_text(encoding='utf-8')
-          old = (
+
+          exact_replacements = [
+              (
+                  ' #include <array>\n #include <atomic>\n+#include <future>\n',
+                  ' #include <array>\n #include <atomic>\n+#include <chrono>\n+#include <future>\n',
+                  1,
+                  'explicit chrono include',
+              ),
+              (
+                  '+\tConfigureMultipartContainmentTest(db, con, server);\n+\n+\tauto &fs =',
+                  '+\tConfigureMultipartContainmentTest(db, con, server);\n+\tRequireQueryOk(con, "BEGIN TRANSACTION");\n+\n+\tauto &fs =',
+                  2,
+                  'direct-handle transaction setup',
+              ),
+              (
+                  '+\tcon.context->ClearInterrupt();\n+\n+\tREQUIRE(returned_before_release);',
+                  '+\tcon.context->ClearInterrupt();\n+\tRequireQueryOk(con, "ROLLBACK");\n+\n+\tREQUIRE(returned_before_release);',
+                  1,
+                  'interrupted-handle transaction cleanup',
+              ),
+              (
+                  '+\thandle.reset();\n+\n+\tauto observations =',
+                  '+\thandle.reset();\n+\tRequireQueryOk(con, "COMMIT");\n+\n+\tauto observations =',
+                  1,
+                  'successful-handle transaction cleanup',
+              ),
+          ]
+          for old, new, expected, label in exact_replacements:
+              actual = text.count(old)
+              if actual != expected:
+                  raise SystemExit(f'{label}: expected {expected} matches, found {actual}')
+              text = text.replace(old, new)
+
+          old_footer = (
               '@@ -564,4 +597,12 @@ void MockS3Server::ReleaseFullGet() {\n'
               ' \timpl->ReleaseFullGet();\n'
               ' }\n'
@@ -63,7 +96,7 @@ jobs:
               ' \n'
               ' } // namespace duckdb\n'
           )
-          new = (
+          new_footer = (
               '@@ -566,4 +599,12 @@ void MockS3Server::ReleaseFullGet() {\n'
               ' \timpl->ReleaseFullGet();\n'
               ' }\n'
@@ -78,9 +111,9 @@ jobs:
               ' \n'
               ' string MockS3RefreshTargetName(MockS3RefreshTarget target) {\n'
           )
-          if text.count(old) != 1:
+          if text.count(old_footer) != 1:
               raise SystemExit('containment mock footer hunk changed')
-          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          path.write_text(text.replace(old_footer, new_footer, 1), encoding='utf-8')
           PY
 
           for patch in \
@@ -119,6 +152,7 @@ jobs:
 
       - name: Run clean containment regression
         run: |
+          set -o pipefail
           ./build/issue103-clean/test/unittest_httpfs \
             "HTTPFS contains S3 multipart publication during interrupted teardown" \
             2>&1 | tee issue103-clean-containment.log
