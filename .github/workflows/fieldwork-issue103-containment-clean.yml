@@ -5,13 +5,13 @@ on:
     branches:
       - fieldwork/103-s3-interrupt-containment-clean
     paths:
+      - .github/patches/extensions/httpfs/0001-remove-pessimizing-move.patch
       - .github/patches/extensions/httpfs/issue103-interrupt-containment.patch
-      - .github/config/extensions/httpfs.cmake
       - .github/workflows/fieldwork-issue103-containment-clean.yml
   pull_request:
     paths:
+      - .github/patches/extensions/httpfs/0001-remove-pessimizing-move.patch
       - .github/patches/extensions/httpfs/issue103-interrupt-containment.patch
-      - .github/config/extensions/httpfs.cmake
       - .github/workflows/fieldwork-issue103-containment-clean.yml
   workflow_dispatch:
 
@@ -22,6 +22,9 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  HTTPFS_COMMIT: df92a34d29eb589591adfadba89fa8df874e54ea
+
 jobs:
   containment:
     runs-on: ubuntu-24.04
@@ -31,52 +34,42 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Repair generated HTTPFS patch metadata
+      - name: Stage pinned HTTPFS candidate
         run: |
-          python3 - <<'PY'
-          from pathlib import Path
+          set -euxo pipefail
+          mkdir -p .fieldwork/httpfs
+          git -C .fieldwork/httpfs init
+          git -C .fieldwork/httpfs remote add origin https://github.com/duckdb/duckdb-httpfs.git
+          git -C .fieldwork/httpfs fetch --depth=1 origin "$HTTPFS_COMMIT"
+          git -C .fieldwork/httpfs checkout --detach FETCH_HEAD
 
-          path = Path('.github/patches/extensions/httpfs/issue103-interrupt-containment.patch')
-          text = path.read_text(encoding='utf-8')
-          old_includes = '''@@ -12,11 +12,13 @@
- #include "duckdb/common/file_system.hpp"
- #include "duckdb/common/string_util.hpp"
- #include "duckdb/main/client_context.hpp"
- #include "duckdb/main/extension/extension_loader.hpp"
- #include "duckdb/main/secret/secret.hpp"
- 
- #include <array>
- #include <atomic>
-+#include <future>
- #include <mutex>
- #include <new>
-+#include <thread>
- #include <unordered_map>
-'''
-          new_includes = '''@@ -21,0 +22,2 @@
-+#include <future>
-+#include <thread>
-'''
-          if text.count(old_includes) != 1:
-              raise SystemExit('containment include hunk changed')
-          text = text.replace(old_includes, new_includes, 1)
-          old_tail = '@@ -947,6 +949,140 @@'
-          new_tail = '@@ -947,6 +949,142 @@'
-          if text.count(old_tail) != 1:
-              raise SystemExit('containment tail hunk changed')
-          path.write_text(text.replace(old_tail, new_tail, 1), encoding='utf-8')
-          PY
+          for patch in \
+            .github/patches/extensions/httpfs/0001-remove-pessimizing-move.patch \
+            .github/patches/extensions/httpfs/issue103-interrupt-containment.patch
+          do
+            git -C .fieldwork/httpfs apply --check --recount "$GITHUB_WORKSPACE/$patch"
+            git -C .fieldwork/httpfs apply --recount "$GITHUB_WORKSPACE/$patch"
+          done
+          git -C .fieldwork/httpfs diff --check
+
+          cat > .fieldwork/httpfs-local.cmake <<'CMAKE'
+          duckdb_extension_load(httpfs
+              LOAD_TESTS
+              SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}/httpfs"
+              EXTENSION_VERSION df92a34d29eb589591adfadba89fa8df874e54ea
+          )
+          CMAKE
 
       - name: Install build dependencies
         run: |
           sudo apt-get update -y -qq
           sudo apt-get install -y -qq ninja-build mold libcurl4-openssl-dev libssl-dev
 
-      - name: Configure DuckDB with pinned HTTPFS
+      - name: Configure DuckDB with staged HTTPFS
         run: |
           cmake -S . -B build/issue103-clean -G Ninja \
             -DFORCE_COLORED_OUTPUT=1 \
-            -DDUCKDB_EXTENSION_CONFIGS=.github/config/extensions/httpfs.cmake \
+            -DDUCKDB_EXTENSION_CONFIGS="$GITHUB_WORKSPACE/.fieldwork/httpfs-local.cmake" \
             '-DBUILD_EXTENSIONS=;parquet' \
             -DDEBUG_MOVE=1 \
             -DCMAKE_BUILD_TYPE=Debug
