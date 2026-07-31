@@ -10,8 +10,21 @@ import sys
 import duckdb
 
 
+if len(sys.argv) != 5:
+    raise SystemExit(
+        "usage: secondary_art_checkpoint_probe.py LIBRARY DATABASE "
+        "INDEX_KIND ROW_COUNT"
+    )
+
 LIBRARY = pathlib.Path(sys.argv[1]).resolve()
 DATABASE = pathlib.Path(sys.argv[2]).resolve()
+INDEX_KIND = sys.argv[3]
+ROW_COUNT = int(sys.argv[4])
+if INDEX_KIND not in {"secondary", "primary", "none"}:
+    raise SystemExit(f"unsupported index kind: {INDEX_KIND}")
+if ROW_COUNT < 2:
+    raise SystemExit("row count must be at least 2")
+
 for candidate in (DATABASE, pathlib.Path(f"{DATABASE}.wal")):
     try:
         candidate.unlink()
@@ -64,7 +77,9 @@ def scalar(sql: str, mode: str = "READ_WRITE") -> int:
     if lib.duckdb_connect(database, c.byref(connection)) != 0:
         lib.duckdb_close(c.byref(database))
         raise RuntimeError("duckdb_connect failed")
-    result = (c.c_byte * 512)()
+    # duckdb_result is opaque to this probe. Reserve aligned storage larger than
+    # every released layout used by the matrix, then pass it through the C API.
+    result = (c.c_uint64 * 128)()
     try:
         if lib.duckdb_query(connection, sql.encode(), c.byref(result)) != 0:
             raise RuntimeError(f"duckdb_query failed: {sql}")
@@ -76,30 +91,36 @@ def scalar(sql: str, mode: str = "READ_WRITE") -> int:
 
 
 writer = duckdb.connect(str(DATABASE))
-writer.execute("CREATE TABLE t(a INTEGER)")
-writer.execute("CREATE INDEX secondary_i ON t(a)")
-writer.execute("INSERT INTO t VALUES (1), (2)")
+if INDEX_KIND == "primary":
+    writer.execute("CREATE TABLE t(a INTEGER PRIMARY KEY)")
+else:
+    writer.execute("CREATE TABLE t(a INTEGER)")
+if INDEX_KIND == "secondary":
+    writer.execute("CREATE INDEX secondary_i ON t(a)")
+writer.execute(f"INSERT INTO t SELECT range AS a FROM range(1, {ROW_COUNT + 1})")
 wal_present = pathlib.Path(f"{DATABASE}.wal").exists()
 if not wal_present:
     raise RuntimeError("expected pending WAL while writer connection remains open")
 
 # A second independently loaded engine opens read-write and checkpoints the WAL.
 scalar("SELECT 1")
-indexed_count = scalar("SELECT count(*) FROM t WHERE a = 1")
+filtered_count = scalar("SELECT count(*) FROM t WHERE a = 1")
 full_count = scalar("SELECT count(*) FROM t")
-corrupt = indexed_count != 1 or full_count != 2
+wrong_result = filtered_count != 1 or full_count != ROW_COUNT
 
 record = {
     "python_duckdb_version": duckdb.__version__,
     "library": str(LIBRARY),
     "database": str(DATABASE),
+    "index_kind": INDEX_KIND,
+    "row_count": ROW_COUNT,
     "wal_present_before_checkpoint": wal_present,
-    "indexed_count": indexed_count,
+    "filtered_count": filtered_count,
     "full_count": full_count,
-    "corrupt": corrupt,
+    "wrong_result": wrong_result,
 }
 print(json.dumps(record, sort_keys=True), flush=True)
 
 # Deliberately bypass Python/C++ cleanup so the original writer cannot heal the
-# persisted index with its own correct in-memory state during interpreter exit.
-os._exit(0 if corrupt else 1)
+# persisted state with its own in-memory view during interpreter exit.
+os._exit(0 if wrong_result else 1)
