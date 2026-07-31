@@ -1,0 +1,392 @@
+name: Fieldwork secondary ART source repair
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/fieldwork-secondary-art-source-repair.yml'
+      - 'tools/fieldwork/resolve_duckdb_shared_library.py'
+      - 'tools/fieldwork/test_resolve_duckdb_shared_library.py'
+      - 'tools/fieldwork/secondary_art_persistence_trigger_probe.py'
+      - 'tools/fieldwork/run_secondary_art_trigger_case.py'
+      - 'tools/fieldwork/secondary_art_source_identity_probe.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  historical-packaging-repair:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - case_id: v1.4.0
+            source_ref: v1.4.0
+            expected_probe_status: 0
+          - case_id: art-builder-parent
+            source_ref: 22e6d1e3751829d2d029636b75ff931710ca7cbc^
+            expected_probe_status: -1
+          - case_id: art-builder
+            source_ref: 22e6d1e3751829d2d029636b75ff931710ca7cbc
+            expected_probe_status: -1
+    env:
+      CASE_ID: ${{ matrix.case_id }}
+      SOURCE_REF: ${{ matrix.source_ref }}
+      EXPECTED_PROBE_STATUS: ${{ matrix.expected_probe_status }}
+      ROW_COUNT: '2'
+    steps:
+      - name: Check out controlled fork carrier
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes ninja-build
+
+      - name: Run exact-library resolver controls
+        run: |
+          python -m unittest \
+            tools.fieldwork.test_resolve_duckdb_shared_library
+
+      - name: Resolve exact historical source
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! git remote get-url public >/dev/null 2>&1; then
+            git remote add public https://github.com/duckdb/duckdb.git
+          fi
+          git fetch --force --tags public \
+            '+refs/heads/main:refs/remotes/public/main'
+          source_sha=$(git rev-parse "${SOURCE_REF}^{commit}")
+          source_dir="$RUNNER_TEMP/duckdb-source-$CASE_ID"
+          git worktree add --detach "$source_dir" "$source_sha"
+          {
+            printf 'source_sha=%s\n' "$source_sha"
+            printf 'source_dir=%s\n' "$source_dir"
+          } >>"$GITHUB_OUTPUT"
+          python - "$CASE_ID" "$SOURCE_REF" "$source_sha" <<'PY' \
+            | tee "source-$CASE_ID.json"
+          import json
+          import sys
+          print(json.dumps({
+              "schema_version": 1,
+              "case_id": sys.argv[1],
+              "requested_ref": sys.argv[2],
+              "source_sha": sys.argv[3],
+          }, sort_keys=True))
+          PY
+
+      - name: Build and dereference the exact shared-library path
+        shell: bash
+        env:
+          SOURCE_DIR: ${{ steps.source.outputs.source_dir }}
+        run: |
+          set -euo pipefail
+          make -C "$SOURCE_DIR" release GEN=ninja DISABLE_SHELL=1
+          runtime="$RUNNER_TEMP/dual-engine-$CASE_ID"
+          python tools/fieldwork/resolve_duckdb_shared_library.py \
+            "$SOURCE_DIR" \
+            --copy-to "$runtime/writer/libduckdb.so" \
+            --copy-to "$runtime/trigger/libduckdb.so" \
+            --output "library-resolution-$CASE_ID.json" \
+            >"library-resolution-$CASE_ID.stdout"
+          test "$(stat -c '%d:%i' "$runtime/writer/libduckdb.so")" \
+            != "$(stat -c '%d:%i' "$runtime/trigger/libduckdb.so")"
+          sha256sum \
+            "$runtime/writer/libduckdb.so" \
+            "$runtime/trigger/libduckdb.so" \
+            | tee "libraries-$CASE_ID.sha256"
+          printf '%s\n' "$runtime" >"runtime-$CASE_ID.txt"
+
+      - name: Run the predecessor same-source lifecycle
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ steps.source.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          runtime=$(cat "runtime-$CASE_ID.txt")
+          database="$PWD/secondary-art-source-$CASE_ID.duckdb"
+          set +e
+          python tools/fieldwork/secondary_art_source_identity_probe.py create \
+            "$runtime/writer/libduckdb.so" \
+            "$runtime/trigger/libduckdb.so" \
+            "$database" "$ROW_COUNT" "$SOURCE_SHA" \
+            | tee "create-$CASE_ID.json"
+          status=${PIPESTATUS[0]}
+          set -e
+          printf 'probe_status=%s\n' "$status" \
+            | tee "probe-status-$CASE_ID.txt"
+          if [[ $status -ne 0 && $status -ne 1 ]]; then
+            exit "$status"
+          fi
+          python tools/fieldwork/secondary_art_source_identity_probe.py inspect \
+            "$runtime/trigger/libduckdb.so" \
+            "$database" "$ROW_COUNT" "$SOURCE_SHA" \
+            | tee "inspection-$CASE_ID.json"
+
+      - name: Classify repaired historical row
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ steps.source.outputs.source_sha }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import pathlib
+
+          def require(value, message):
+              if not value:
+                  raise SystemExit(message)
+
+          case_id = os.environ["CASE_ID"]
+          source_sha = os.environ["SOURCE_SHA"]
+          row_count = int(os.environ["ROW_COUNT"])
+          expected_status = int(os.environ["EXPECTED_PROBE_STATUS"])
+          status = int(pathlib.Path(f"probe-status-{case_id}.txt").read_text().split("=", 1)[1])
+          resolution = json.loads(pathlib.Path(f"library-resolution-{case_id}.json").read_text())
+          created = json.loads(pathlib.Path(f"create-{case_id}.json").read_text())
+          inspected = json.loads(pathlib.Path(f"inspection-{case_id}.json").read_text())
+
+          require(resolution.get("schema_version") == 1, "invalid library receipt")
+          require(
+              resolution.get("link_path", "").endswith("/build/release/src/libduckdb.so"),
+              "library did not originate at exact release link",
+          )
+          require(created.get("source_sha") == source_sha, "create source mismatch")
+          require(inspected.get("source_sha") == source_sha, "inspection source mismatch")
+          writer = created["writer_library"]
+          trigger = created["checkpointer_library"]
+          require(writer["sha256"] == trigger["sha256"], "engine bytes differ")
+          require(
+              (writer["device"], writer["inode"]) != (trigger["device"], trigger["inode"]),
+              "engine copies share one inode",
+          )
+          require(writer["open_address"] != trigger["open_address"], "engine images not distinct")
+          require(type(created.get("wrong_result")) is bool, "wrong_result is not boolean")
+          require(status == (0 if created["wrong_result"] else 1), "status disagrees with result")
+          if expected_status >= 0:
+              require(status == expected_status, f"expected status {expected_status}, got {status}")
+          require(created["full_count"] == row_count, "create full count changed")
+          require(inspected["full_count"] == row_count, "inspection full count changed")
+          require(
+              inspected["disabled_filtered_count"] == 1
+              and inspected["disabled_terminal_count"] == 1,
+              "sequential controls failed",
+          )
+          require(inspected["first_values"] == list(range(1, row_count + 1)), "rows changed")
+
+          summary = {
+              "schema_version": 1,
+              "case_id": case_id,
+              "source_sha": source_sha,
+              "probe_status": status,
+              "wrong_result": created["wrong_result"],
+              "enabled_filtered_count": inspected["enabled_filtered_count"],
+              "disabled_filtered_count": inspected["disabled_filtered_count"],
+              "library_resolution": resolution,
+          }
+          pathlib.Path(f"summary-{case_id}.json").write_text(
+              json.dumps(summary, indent=2, sort_keys=True) + "\n"
+          )
+          print(json.dumps(summary, sort_keys=True))
+          PY
+
+      - name: Upload repaired historical evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: secondary-art-source-repair-${{ matrix.case_id }}
+          path: |
+            source-${{ matrix.case_id }}.json
+            library-resolution-${{ matrix.case_id }}.json
+            library-resolution-${{ matrix.case_id }}.stdout
+            libraries-${{ matrix.case_id }}.sha256
+            runtime-${{ matrix.case_id }}.txt
+            create-${{ matrix.case_id }}.json
+            probe-status-${{ matrix.case_id }}.txt
+            inspection-${{ matrix.case_id }}.json
+            summary-${{ matrix.case_id }}.json
+            secondary-art-source-${{ matrix.case_id }}.duckdb
+            secondary-art-source-${{ matrix.case_id }}.duckdb.wal
+          if-no-files-found: warn
+          retention-days: 14
+
+  current-trigger-matrix:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      ROW_COUNT: '2'
+    steps:
+      - name: Check out controlled fork carrier
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes ninja-build
+
+      - name: Run exact-library resolver controls
+        run: |
+          python -m unittest \
+            tools.fieldwork.test_resolve_duckdb_shared_library
+
+      - name: Resolve current public main exactly
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! git remote get-url public >/dev/null 2>&1; then
+            git remote add public https://github.com/duckdb/duckdb.git
+          fi
+          git fetch --force public \
+            '+refs/heads/main:refs/remotes/public/main'
+          source_sha=$(git rev-parse 'refs/remotes/public/main^{commit}')
+          source_dir="$RUNNER_TEMP/duckdb-current-source"
+          git worktree add --detach "$source_dir" "$source_sha"
+          {
+            printf 'source_sha=%s\n' "$source_sha"
+            printf 'source_dir=%s\n' "$source_dir"
+          } >>"$GITHUB_OUTPUT"
+          python - "$source_sha" <<'PY' | tee current-source.json
+          import json
+          import sys
+          print(json.dumps({
+              "schema_version": 1,
+              "requested_ref": "public/main",
+              "source_sha": sys.argv[1],
+          }, sort_keys=True))
+          PY
+
+      - name: Build one current library and copy two engine images
+        shell: bash
+        env:
+          SOURCE_DIR: ${{ steps.source.outputs.source_dir }}
+        run: |
+          set -euo pipefail
+          make -C "$SOURCE_DIR" release GEN=ninja DISABLE_SHELL=1
+          runtime="$RUNNER_TEMP/current-trigger-engines"
+          python tools/fieldwork/resolve_duckdb_shared_library.py \
+            "$SOURCE_DIR" \
+            --copy-to "$runtime/writer/libduckdb.so" \
+            --copy-to "$runtime/trigger/libduckdb.so" \
+            --output current-library-resolution.json \
+            >current-library-resolution.stdout
+          test "$(stat -c '%d:%i' "$runtime/writer/libduckdb.so")" \
+            != "$(stat -c '%d:%i' "$runtime/trigger/libduckdb.so")"
+          sha256sum \
+            "$runtime/writer/libduckdb.so" \
+            "$runtime/trigger/libduckdb.so" \
+            | tee current-libraries.sha256
+          printf '%s\n' "$runtime" >current-runtime.txt
+
+      - name: Execute four isolated named trigger cases
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ steps.source.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          runtime=$(cat current-runtime.txt)
+          for trigger in open-close select-one indexed-read explicit-checkpoint; do
+            python tools/fieldwork/run_secondary_art_trigger_case.py \
+              "$runtime/writer/libduckdb.so" \
+              "$runtime/trigger/libduckdb.so" \
+              "$PWD/secondary-art-trigger-$trigger.duckdb" \
+              "$ROW_COUNT" "$SOURCE_SHA" "$trigger" \
+              "$PWD/case-$trigger" \
+              --output "$PWD/case-$trigger.json" \
+              >"$PWD/case-$trigger.stdout"
+          done
+
+      - name: Summarize trigger ownership without hidden inspection
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ steps.source.outputs.source_sha }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import pathlib
+
+          source_sha = os.environ["SOURCE_SHA"]
+          rows = []
+          for trigger in (
+              "open-close",
+              "select-one",
+              "indexed-read",
+              "explicit-checkpoint",
+          ):
+              row = json.loads(pathlib.Path(f"case-{trigger}.json").read_text())
+              if row.get("schema_version") != 1:
+                  raise SystemExit(f"{trigger}: invalid case schema")
+              if row.get("source_sha") != source_sha or row.get("trigger") != trigger:
+                  raise SystemExit(f"{trigger}: case identity mismatch")
+              if type(row.get("settled_without_writer_close")) is not bool:
+                  raise SystemExit(f"{trigger}: settled state is not boolean")
+              if row["settled_without_writer_close"]:
+                  if type(row.get("wrong_result")) is not bool:
+                      raise SystemExit(f"{trigger}: settled row lacks boolean result")
+              elif row.get("wrong_result") is not None:
+                  raise SystemExit(f"{trigger}: unsettled row invented a result")
+              rows.append({
+                  "trigger": trigger,
+                  "settled_without_writer_close": row["settled_without_writer_close"],
+                  "wrong_result": row["wrong_result"],
+                  "sql": row["trigger_record"]["trigger_observation"]["sql"],
+                  "trigger_scalar": row["trigger_record"]["trigger_observation"]["scalar"],
+                  "wal_before": row["trigger_record"]["wal_before_trigger"],
+                  "wal_after": row["trigger_record"]["wal_after_trigger"],
+                  "inspection": row["inspection_record"],
+              })
+
+          first_settling = next(
+              (row["trigger"] for row in rows if row["settled_without_writer_close"]),
+              None,
+          )
+          first_losing = next(
+              (row["trigger"] for row in rows if row["wrong_result"] is True),
+              None,
+          )
+          summary = {
+              "schema_version": 1,
+              "source_sha": source_sha,
+              "row_count": int(os.environ["ROW_COUNT"]),
+              "first_settling_trigger_in_test_order": first_settling,
+              "first_losing_trigger_in_test_order": first_losing,
+              "rows": rows,
+              "attribution_rule": (
+                  "Only a named trigger that removed the WAL before the original writer exited "
+                  "is read-only inspected. An unsettled row remains null rather than adding a hidden read-write trigger."
+              ),
+          }
+          pathlib.Path("trigger-summary.json").write_text(
+              json.dumps(summary, indent=2, sort_keys=True) + "\n"
+          )
+          print(json.dumps(summary, sort_keys=True))
+          PY
+
+      - name: Upload current trigger evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: secondary-art-current-trigger-matrix
+          path: |
+            current-source.json
+            current-library-resolution.json
+            current-library-resolution.stdout
+            current-libraries.sha256
+            current-runtime.txt
+            case-*.json
+            case-*.stdout
+            case-*/
+            trigger-summary.json
+            secondary-art-trigger-*.duckdb
+            secondary-art-trigger-*.duckdb.wal
+          if-no-files-found: warn
+          retention-days: 14
