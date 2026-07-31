@@ -97,6 +97,40 @@ def phase_shutdown(args: argparse.Namespace) -> int:
     os._exit(0)
 
 
+def phase_repeat_shutdown(args: argparse.Namespace) -> int:
+    database = pathlib.Path(args.database).resolve(strict=True)
+    wal = pathlib.Path(f"{database}.wal")
+    engine = Engine(pathlib.Path(args.library))
+    identity = engine.identity()
+    database_before = file_state(database)
+    wal_before = file_state(wal)
+
+    # This process also avoids the indexed table. For the candidate, replayed
+    # operations must remain buffered and the second context-free close must
+    # refuse stale serialization again, preserving the WAL for a later bind.
+    with engine.connect(database) as connection:
+        scalar = connection.scalar("SELECT 1")
+    if scalar != 1:
+        raise RuntimeError(f"repeat-shutdown SELECT 1 returned {scalar}")
+
+    record = {
+        "schema_version": 1,
+        "phase": "repeat-context-free-shutdown",
+        "source_sha": args.source_sha,
+        "database": str(database),
+        "row_count": args.row_count,
+        "library": asdict(identity),
+        "shutdown_query": "SELECT 1",
+        "shutdown_query_scalar": scalar,
+        "database_before_repeat_shutdown": database_before,
+        "wal_before_repeat_shutdown": wal_before,
+        "database_after_repeat_shutdown": file_state(database),
+        "wal_after_repeat_shutdown": file_state(wal),
+    }
+    print(json.dumps(record, sort_keys=True))
+    return 0
+
+
 def phase_bind_checkpoint(args: argparse.Namespace) -> int:
     database = pathlib.Path(args.database).resolve(strict=True)
     wal = pathlib.Path(f"{database}.wal")
@@ -211,6 +245,7 @@ def phase_inspect(args: argparse.Namespace) -> int:
 def classify_lifecycle(
     label: str,
     shutdown: dict[str, Any],
+    repeat: dict[str, Any],
     bind: dict[str, Any],
     inspection: dict[str, Any],
     row_count: int,
@@ -238,6 +273,8 @@ def classify_lifecycle(
     parent_shape = (
         shutdown.get("wal_before_shutdown", {}).get("present") is True
         and shutdown.get("wal_after_shutdown", {}).get("present") is False
+        and repeat.get("wal_before_repeat_shutdown", {}).get("present") is False
+        and repeat.get("wal_after_repeat_shutdown", {}).get("present") is False
         and bind.get("wal_before_bind", {}).get("present") is False
         and bind.get("enabled_filtered_count") == 0
         and bind.get("enabled_terminal_count") == 0
@@ -247,6 +284,8 @@ def classify_lifecycle(
     candidate_shape = (
         shutdown.get("wal_before_shutdown", {}).get("present") is True
         and shutdown.get("wal_after_shutdown", {}).get("present") is True
+        and repeat.get("wal_before_repeat_shutdown", {}).get("present") is True
+        and repeat.get("wal_after_repeat_shutdown", {}).get("present") is True
         and bind.get("wal_before_bind", {}).get("present") is True
         and bind.get("enabled_filtered_count") == 1
         and bind.get("enabled_terminal_count") == 1
@@ -268,6 +307,9 @@ def classify_lifecycle(
         ),
         "wal_preserved_after_context_free_shutdown": shutdown[
             "wal_after_shutdown"
+        ]["present"],
+        "wal_preserved_after_repeat_shutdown": repeat[
+            "wal_after_repeat_shutdown"
         ]["present"],
         "indexed_count_before_explicit_checkpoint": bind[
             "enabled_filtered_count"
@@ -292,6 +334,13 @@ def build_parser() -> argparse.ArgumentParser:
     shutdown.add_argument("row_count", type=int)
     shutdown.add_argument("source_sha")
     shutdown.set_defaults(function=phase_shutdown)
+
+    repeat = subparsers.add_parser("repeat-shutdown")
+    repeat.add_argument("library")
+    repeat.add_argument("database")
+    repeat.add_argument("row_count", type=int)
+    repeat.add_argument("source_sha")
+    repeat.set_defaults(function=phase_repeat_shutdown)
 
     bind = subparsers.add_parser("bind-checkpoint")
     bind.add_argument("library")
