@@ -18,12 +18,36 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - version: '1.3.2'
+          - case_id: v1.3.2-secondary-2
+            version: '1.3.2'
+            index_kind: secondary
+            row_count: 2
             expected_probe_status: 1
-            expected_index_count: 1
-          - version: '1.5.4'
+            expected_filtered_count: 1
+          - case_id: v1.5.4-secondary-2
+            version: '1.5.4'
+            index_kind: secondary
+            row_count: 2
             expected_probe_status: 0
-            expected_index_count: 0
+            expected_filtered_count: 0
+          - case_id: v1.5.4-primary-2
+            version: '1.5.4'
+            index_kind: primary
+            row_count: 2
+            expected_probe_status: 1
+            expected_filtered_count: 1
+          - case_id: v1.5.4-none-2
+            version: '1.5.4'
+            index_kind: none
+            row_count: 2
+            expected_probe_status: 1
+            expected_filtered_count: 1
+          - case_id: v1.5.4-secondary-10000
+            version: '1.5.4'
+            index_kind: secondary
+            row_count: 10000
+            expected_probe_status: -1
+            expected_filtered_count: -1
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -42,56 +66,107 @@ jobs:
           find libduckdb -maxdepth 2 -type f -print
       - name: Run independent-engine checkpoint probe
         env:
-          EXPECTED_STATUS: ${{ matrix.expected_probe_status }}
+          CASE_ID: ${{ matrix.case_id }}
+          INDEX_KIND: ${{ matrix.index_kind }}
+          ROW_COUNT: ${{ matrix.row_count }}
         run: |
           LIBRARY=$(find libduckdb -type f -name 'libduckdb.so' -print -quit)
           test -n "$LIBRARY"
           set +e
           python tools/fieldwork/secondary_art_checkpoint_probe.py \
-            "$LIBRARY" "$PWD/secondary-art-${{ matrix.version }}.duckdb" \
-            | tee "probe-${{ matrix.version }}.json"
+            "$LIBRARY" "$PWD/secondary-art-$CASE_ID.duckdb" \
+            "$INDEX_KIND" "$ROW_COUNT" \
+            | tee "probe-$CASE_ID.json"
           status=${PIPESTATUS[0]}
           set -e
-          echo "probe_status=$status" | tee "probe-status-${{ matrix.version }}.txt"
-          test "$status" -eq "$EXPECTED_STATUS"
+          echo "probe_status=$status" | tee "probe-status-$CASE_ID.txt"
       - name: Inspect persisted file in a fresh client
         env:
-          EXPECTED_INDEX_COUNT: ${{ matrix.expected_index_count }}
-          VERSION: ${{ matrix.version }}
+          CASE_ID: ${{ matrix.case_id }}
+          ROW_COUNT: ${{ matrix.row_count }}
         run: |
-          python - <<'PY' | tee "inspection-${{ matrix.version }}.json"
+          python - <<'PY' | tee "inspection-${{ matrix.case_id }}.json"
           import duckdb
           import json
           import os
 
-          path = f"secondary-art-{os.environ['VERSION']}.duckdb"
+          case_id = os.environ["CASE_ID"]
+          row_count = int(os.environ["ROW_COUNT"])
+          path = f"secondary-art-{case_id}.duckdb"
           connection = duckdb.connect(path, read_only=True)
-          indexed = connection.execute(
+          enabled_count = connection.execute(
               "SELECT count(*) FROM t WHERE a = 1"
           ).fetchone()[0]
-          full = connection.execute("SELECT count(*) FROM t").fetchone()[0]
-          plan = connection.execute(
-              "EXPLAIN SELECT count(*) FROM t WHERE a = 1"
+          terminal_count = connection.execute(
+              "SELECT count(*) FROM t WHERE a = ?", [row_count]
+          ).fetchone()[0]
+          full_count = connection.execute("SELECT count(*) FROM t").fetchone()[0]
+          first_values = [
+              row[0]
+              for row in connection.execute(
+                  "SELECT a FROM t ORDER BY a LIMIT 10"
+              ).fetchall()
+          ]
+          enabled_plan = connection.execute(
+              "EXPLAIN ANALYZE SELECT count(*) FROM t WHERE a = 1"
+          ).fetchall()
+          connection.execute("PRAGMA disable_optimizer")
+          disabled_count = connection.execute(
+              "SELECT count(*) FROM t WHERE a = 1"
+          ).fetchone()[0]
+          disabled_plan = connection.execute(
+              "EXPLAIN ANALYZE SELECT count(*) FROM t WHERE a = 1"
           ).fetchall()
           connection.close()
           record = {
               "version": duckdb.__version__,
-              "indexed_count": indexed,
-              "full_count": full,
-              "plan": plan,
+              "case_id": case_id,
+              "enabled_filtered_count": enabled_count,
+              "disabled_filtered_count": disabled_count,
+              "terminal_filtered_count": terminal_count,
+              "full_count": full_count,
+              "first_values": first_values,
+              "enabled_plan": enabled_plan,
+              "disabled_plan": disabled_plan,
           }
           print(json.dumps(record, sort_keys=True))
-          assert indexed == int(os.environ["EXPECTED_INDEX_COUNT"]), record
-          assert full == 2, record
           PY
       - name: Upload exact database and results
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: secondary-art-${{ matrix.version }}
+          name: secondary-art-${{ matrix.case_id }}
           path: |
-            secondary-art-${{ matrix.version }}.duckdb
-            secondary-art-${{ matrix.version }}.duckdb.wal
-            probe-${{ matrix.version }}.json
-            probe-status-${{ matrix.version }}.txt
-            inspection-${{ matrix.version }}.json
+            secondary-art-${{ matrix.case_id }}.duckdb
+            secondary-art-${{ matrix.case_id }}.duckdb.wal
+            probe-${{ matrix.case_id }}.json
+            probe-status-${{ matrix.case_id }}.txt
+            inspection-${{ matrix.case_id }}.json
           if-no-files-found: error
+      - name: Classify expected controls
+        env:
+          CASE_ID: ${{ matrix.case_id }}
+          EXPECTED_PROBE_STATUS: ${{ matrix.expected_probe_status }}
+          EXPECTED_FILTERED_COUNT: ${{ matrix.expected_filtered_count }}
+          ROW_COUNT: ${{ matrix.row_count }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import pathlib
+
+          case_id = os.environ["CASE_ID"]
+          expected_status = int(os.environ["EXPECTED_PROBE_STATUS"])
+          expected_filtered = int(os.environ["EXPECTED_FILTERED_COUNT"])
+          row_count = int(os.environ["ROW_COUNT"])
+          status_text = pathlib.Path(f"probe-status-{case_id}.txt").read_text()
+          status = int(status_text.strip().split("=", 1)[1])
+          inspection = json.loads(
+              pathlib.Path(f"inspection-{case_id}.json").read_text()
+          )
+          assert inspection["full_count"] == row_count, inspection
+          if expected_status >= 0:
+              assert status == expected_status, (status, inspection)
+          if expected_filtered >= 0:
+              assert inspection["enabled_filtered_count"] == expected_filtered, inspection
+          PY
