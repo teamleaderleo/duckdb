@@ -35,7 +35,7 @@ FROM glob('{TEST_DIR}/hive-default-partition-collision/p=%5F_HIVE_DEFAULT_PARTIT
 1
 
 query I
-SELECT count(DISTINCT file)
+SELECT count(DISTINCT filename)
 FROM parquet_scan('{TEST_DIR}/hive-default-partition-collision/**/*.parquet', filename=1);
 ----
 2
