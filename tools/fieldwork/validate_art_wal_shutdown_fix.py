@@ -62,6 +62,7 @@ def phase_shutdown(args: argparse.Namespace) -> int:
         f"INSERT INTO t SELECT range AS a FROM range(1, {args.row_count + 1})"
     )
 
+    database_before = file_state(database)
     wal_before = file_state(wal)
     if wal_before["present"] is not True:
         raise RuntimeError("expected a pending WAL while original writer remains open")
@@ -84,7 +85,7 @@ def phase_shutdown(args: argparse.Namespace) -> int:
         "writer_intentionally_left_open": True,
         "shutdown_query": "SELECT 1",
         "shutdown_query_scalar": scalar,
-        "database_before_shutdown": file_state(database),
+        "database_before_shutdown": database_before,
         "wal_before_shutdown": wal_before,
         "database_after_shutdown": file_state(database),
         "wal_after_shutdown": file_state(wal),
