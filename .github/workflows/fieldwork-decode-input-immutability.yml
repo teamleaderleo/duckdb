@@ -20,7 +20,7 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build
+          sudo apt-get install -y mold ninja-build
       - name: Build debug test runner
         run: GEN=ninja make debug
       - name: Run decode input-immutability regression
