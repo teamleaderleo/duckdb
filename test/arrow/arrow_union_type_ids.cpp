@@ -113,6 +113,12 @@ static void RequireMappedValues(const vector<Value> &values) {
 	REQUIRE(UnionValue::GetValue(values[2]) == Value::INTEGER(32));
 }
 
+TEST_CASE("Arrow sparse union maps identity type IDs", "[arrow][fieldwork]") {
+	const int8_t type_ids[3] = {0, 1, 2};
+	auto values = ScanSparseIntUnion("+us:0,1,2", type_ids);
+	RequireMappedValues(values);
+}
+
 TEST_CASE("Arrow sparse union maps non-sequential type IDs", "[arrow][fieldwork]") {
 	const int8_t type_ids[3] = {5, 7, 9};
 	auto values = ScanSparseIntUnion("+us:5,7,9", type_ids);
