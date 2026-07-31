@@ -78,6 +78,11 @@ jobs:
       - name: Build debug test runner with candidate
         run: GEN=ninja make debug
 
+      - name: Run identity mapping control
+        run: |
+          build/debug/test/unittest \
+            "Arrow sparse union maps identity type IDs"
+
       - name: Run non-sequential mapping regression
         run: |
           build/debug/test/unittest \
