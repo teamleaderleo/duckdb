@@ -1,0 +1,54 @@
+# name: test/sql/function/blob/decode_replace_immutability.test
+# description: Replacing invalid decode bytes must not mutate dictionary-compressed BLOB input
+# group: [blob]
+
+load {TEST_DIR}/decode_replace_immutability.db
+
+statement ok
+PRAGMA threads=1
+
+statement ok
+PRAGMA force_compression='dictionary'
+
+statement ok
+CREATE TABLE decode_replace_input(b BLOB)
+
+statement ok
+INSERT INTO decode_replace_input VALUES
+	('\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\xC0'::BLOB),
+	('\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\xC0'::BLOB),
+	('\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\xC0'::BLOB)
+
+statement ok
+CHECKPOINT
+
+restart
+
+# Guard the vector shape that exposed the input aliasing.
+query I
+SELECT count(*) FROM pragma_storage_info('decode_replace_input')
+WHERE segment_type = 'BLOB' AND compression = 'Dictionary'
+----
+1
+
+query I
+SELECT DISTINCT hex(b) FROM decode_replace_input
+----
+4141414141414141414141414141414141414141C0
+
+query I
+SELECT DISTINCT decode(b, 'replace') FROM decode_replace_input
+----
+AAAAAAAAAAAAAAAAAAAA?
+
+# The read-only transformation must leave the persisted BLOB unchanged.
+query I
+SELECT DISTINCT hex(b) FROM decode_replace_input
+----
+4141414141414141414141414141414141414141C0
+
+# An already-valid non-inline value still follows the no-op path.
+query I
+SELECT decode('\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41'::BLOB, 'replace')
+----
+AAAAAAAAAAAAAAAAAAAA
