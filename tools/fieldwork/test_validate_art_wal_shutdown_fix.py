@@ -38,6 +38,10 @@ class ArtWalShutdownLifecycleClassifierTest(unittest.TestCase):
             "wal_before_shutdown": {"present": True},
             "wal_after_shutdown": {"present": False},
         }
+        repeat = {
+            "wal_before_repeat_shutdown": {"present": False},
+            "wal_after_repeat_shutdown": {"present": False},
+        }
         bind = common_bind()
         bind.update(
             {
@@ -55,7 +59,7 @@ class ArtWalShutdownLifecycleClassifierTest(unittest.TestCase):
         )
 
         result = classify_lifecycle(
-            "parent", shutdown, bind, inspection, ROW_COUNT
+            "parent", shutdown, repeat, bind, inspection, ROW_COUNT
         )
         self.assertEqual(
             result["classification"], "parent-corrupt-shutdown-checkpoint"
@@ -63,11 +67,16 @@ class ArtWalShutdownLifecycleClassifierTest(unittest.TestCase):
         self.assertIs(
             result["wal_preserved_after_context_free_shutdown"], False
         )
+        self.assertIs(result["wal_preserved_after_repeat_shutdown"], False)
 
     def test_candidate_preserve_bind_checkpoint_shape(self) -> None:
         shutdown = {
             "wal_before_shutdown": {"present": True},
             "wal_after_shutdown": {"present": True},
+        }
+        repeat = {
+            "wal_before_repeat_shutdown": {"present": True},
+            "wal_after_repeat_shutdown": {"present": True},
         }
         bind = common_bind()
         bind.update(
@@ -86,7 +95,7 @@ class ArtWalShutdownLifecycleClassifierTest(unittest.TestCase):
         )
 
         result = classify_lifecycle(
-            "candidate", shutdown, bind, inspection, ROW_COUNT
+            "candidate", shutdown, repeat, bind, inspection, ROW_COUNT
         )
         self.assertEqual(
             result["classification"],
@@ -95,11 +104,16 @@ class ArtWalShutdownLifecycleClassifierTest(unittest.TestCase):
         self.assertIs(
             result["wal_preserved_after_context_free_shutdown"], True
         )
+        self.assertIs(result["wal_preserved_after_repeat_shutdown"], True)
 
     def test_ambiguous_or_broken_controls_fail_closed(self) -> None:
         shutdown = {
             "wal_before_shutdown": {"present": True},
             "wal_after_shutdown": {"present": True},
+        }
+        repeat = {
+            "wal_before_repeat_shutdown": {"present": True},
+            "wal_after_repeat_shutdown": {"present": True},
         }
         bind = common_bind()
         bind.update(
@@ -121,14 +135,36 @@ class ArtWalShutdownLifecycleClassifierTest(unittest.TestCase):
         broken["sequential_filtered_count"] = 0
         with self.assertRaisesRegex(ValueError, "common lifecycle controls"):
             classify_lifecycle(
-                "broken-control", shutdown, broken, inspection, ROW_COUNT
+                "broken-control",
+                shutdown,
+                repeat,
+                broken,
+                inspection,
+                ROW_COUNT,
             )
 
         ambiguous = copy.deepcopy(bind)
         ambiguous["enabled_filtered_count"] = 0
         with self.assertRaisesRegex(ValueError, "neither uniquely"):
             classify_lifecycle(
-                "ambiguous", shutdown, ambiguous, inspection, ROW_COUNT
+                "ambiguous",
+                shutdown,
+                repeat,
+                ambiguous,
+                inspection,
+                ROW_COUNT,
+            )
+
+        lost_repeat_wal = copy.deepcopy(repeat)
+        lost_repeat_wal["wal_after_repeat_shutdown"] = {"present": False}
+        with self.assertRaisesRegex(ValueError, "neither uniquely"):
+            classify_lifecycle(
+                "candidate-lost-repeat-wal",
+                shutdown,
+                lost_repeat_wal,
+                bind,
+                inspection,
+                ROW_COUNT,
             )
 
 
