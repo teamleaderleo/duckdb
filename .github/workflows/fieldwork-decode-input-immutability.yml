@@ -5,7 +5,7 @@ on:
     paths:
       - '.github/workflows/fieldwork-decode-input-immutability.yml'
       - 'extension/core_functions/scalar/blob/encode.cpp'
-      - 'test/sql/function/blob/encode.test'
+      - 'test/sql/function/blob/decode_replace_immutability.test'
   workflow_dispatch:
 
 permissions:
@@ -23,5 +23,5 @@ jobs:
           sudo apt-get install -y ninja-build
       - name: Build debug test runner
         run: GEN=ninja make debug
-      - name: Run blob encode/decode regression
-        run: build/debug/test/run test/sql/function/blob/encode.test
+      - name: Run decode input-immutability regression
+        run: build/debug/test/run test/sql/function/blob/decode_replace_immutability.test
