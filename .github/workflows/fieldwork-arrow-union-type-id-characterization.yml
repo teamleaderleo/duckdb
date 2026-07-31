@@ -1,0 +1,95 @@
+name: Fieldwork Arrow union type-id characterization
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/fieldwork-arrow-union-type-id-characterization.yml'
+      - 'test/arrow/CMakeLists.txt'
+      - 'test/arrow/arrow_union_type_ids.cpp'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fieldwork-arrow-union-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  characterize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out exact pull-request head
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify exact test-only carrier
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          CHANGED: ${{ runner.temp }}/changed-files.txt
+          EXPECTED: ${{ runner.temp }}/expected-files.txt
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          git cat-file -e "$BASE_SHA^{commit}"
+          git diff --name-only "$BASE_SHA"...HEAD | sort > "$CHANGED"
+          cat > "$EXPECTED" <<'EOF'
+          .github/workflows/fieldwork-arrow-union-type-id-characterization.yml
+          test/arrow/CMakeLists.txt
+          test/arrow/arrow_union_type_ids.cpp
+          EOF
+          diff -u "$EXPECTED" "$CHANGED"
+          test -z "$(git status --porcelain)"
+          printf 'tested_sha=%s\n' "$EXPECTED_SHA"
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mold ninja-build
+
+      - name: Build debug test runner
+        run: GEN=ninja make debug
+
+      - name: Characterize non-sequential out-of-range mapping
+        env:
+          LOG: ${{ runner.temp }}/non-sequential.log
+        run: |
+          set +e
+          build/debug/test/unittest \
+            "Arrow sparse union maps non-sequential type IDs" \
+            >"$LOG" 2>&1
+          status=$?
+          set -e
+          cat "$LOG"
+          test "$status" -ne 0
+          grep -F 'Arrow union tag out of range: 5' "$LOG"
+
+      - name: Characterize reordered in-range silent mismatch
+        env:
+          LOG: ${{ runner.temp }}/reordered.log
+        run: |
+          set +e
+          build/debug/test/unittest \
+            "Arrow sparse union maps reordered in-range type IDs" \
+            >"$LOG" 2>&1
+          status=$?
+          set -e
+          cat "$LOG"
+          test "$status" -ne 0
+          grep -F 'UnionValue::GetTag(values[0]) == 0' "$LOG"
+
+      - name: Retain exact characterization logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: arrow-union-type-id-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/changed-files.txt
+            ${{ runner.temp }}/non-sequential.log
+            ${{ runner.temp }}/reordered.log
+          if-no-files-found: warn
+          retention-days: 14
