@@ -1,0 +1,27 @@
+name: Fieldwork decode input immutability
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/fieldwork-decode-input-immutability.yml'
+      - 'extension/core_functions/scalar/blob/encode.cpp'
+      - 'test/sql/function/blob/encode.test'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  focused-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build
+      - name: Build debug test runner
+        run: GEN=ninja make debug
+      - name: Run blob encode/decode regression
+        run: build/debug/test/run test/sql/function/blob/encode.test
