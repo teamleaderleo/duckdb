@@ -1,10 +1,11 @@
-name: Fieldwork Arrow union type-ID candidate
+name: Fieldwork Arrow union type-ID hardening
 
 on:
   pull_request:
     paths:
       - '.github/workflows/fieldwork-arrow-union-type-id-candidate.yml'
       - 'tools/fieldwork/apply_arrow_union_type_id_mapping.py'
+      - 'tools/fieldwork/apply_arrow_union_type_id_hardening.py'
       - 'test/arrow/CMakeLists.txt'
       - 'test/arrow/arrow_union_type_ids.cpp'
 
@@ -12,7 +13,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: fieldwork-arrow-union-candidate-${{ github.event.pull_request.number }}
+  group: fieldwork-arrow-union-hardening-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
@@ -27,33 +28,38 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Verify exact carrier identity
+      - name: Verify exact child carrier identity
         env:
           EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+          EXPECTED_PARENT_SHA: c962ece64c1356015aef15a37c0cc636f63b376b
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           CHANGED: ${{ runner.temp }}/carrier-files.txt
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
-          python -m py_compile tools/fieldwork/apply_arrow_union_type_id_mapping.py
+          test "$BASE_SHA" = "$EXPECTED_PARENT_SHA"
+          python -m py_compile \
+            tools/fieldwork/apply_arrow_union_type_id_mapping.py \
+            tools/fieldwork/apply_arrow_union_type_id_hardening.py
           git diff --name-only "$BASE_SHA"...HEAD | sort > "$CHANGED"
-          grep -Fx '.github/workflows/fieldwork-arrow-union-type-id-candidate.yml' "$CHANGED"
-          grep -Fx '.github/workflows/fieldwork-arrow-union-type-id-characterization.yml' "$CHANGED"
-          grep -Fx 'test/arrow/CMakeLists.txt' "$CHANGED"
-          grep -Fx 'test/arrow/arrow_union_type_ids.cpp' "$CHANGED"
-          grep -Fx 'tools/fieldwork/apply_arrow_union_type_id_mapping.py' "$CHANGED"
-          test "$(wc -l < "$CHANGED")" -eq 5
+          cat > "${{ runner.temp }}/expected-carrier-files.txt" <<'EOF'
+          .github/workflows/fieldwork-arrow-union-type-id-candidate.yml
+          test/arrow/arrow_union_type_ids.cpp
+          tools/fieldwork/apply_arrow_union_type_id_hardening.py
+          EOF
+          diff -u "${{ runner.temp }}/expected-carrier-files.txt" "$CHANGED"
           test -z "$(git status --porcelain)"
           printf 'tested_sha=%s\n' "$EXPECTED_SHA"
 
-      - name: Generate exact source candidate
+      - name: Generate exact hardened source candidate
         env:
-          PATCH: ${{ runner.temp }}/arrow-union-type-id.patch
+          PATCH: ${{ runner.temp }}/arrow-union-type-id-hardened.patch
           SOURCE_FILES: ${{ runner.temp }}/source-files.txt
           COUNTS: ${{ runner.temp }}/candidate-generation.txt
         run: |
           set -euo pipefail
           python tools/fieldwork/apply_arrow_union_type_id_mapping.py | tee "$COUNTS"
+          python tools/fieldwork/apply_arrow_union_type_id_hardening.py | tee -a "$COUNTS"
           git diff --check
           git diff --name-only | sort > "$SOURCE_FILES"
           cat > "${{ runner.temp }}/expected-source-files.txt" <<'EOF'
@@ -69,6 +75,7 @@ jobs:
           git diff -- $(cat "$SOURCE_FILES") > "$PATCH"
           test -s "$PATCH"
           grep -F 'FIELDWORK_262_PATCH=arrow-union-type-id-mapping' "$COUNTS"
+          grep -F 'FIELDWORK_262_HARDENING=duplicate-type-id-rejection' "$COUNTS"
 
       - name: Install build dependencies
         run: |
@@ -78,28 +85,27 @@ jobs:
       - name: Build debug test runner with candidate
         run: GEN=ninja make debug
 
-      - name: Run identity mapping control
+      - name: Run positive mapping controls
         run: |
-          build/debug/test/unittest \
-            "Arrow sparse union maps identity type IDs"
+          build/debug/test/unittest "Arrow sparse union maps identity type IDs"
+          build/debug/test/unittest "Arrow sparse union maps non-sequential type IDs"
+          build/debug/test/unittest "Arrow sparse union maps reordered in-range type IDs"
+          build/debug/test/unittest "Arrow sparse union mapping honors a nonzero parent offset"
 
-      - name: Run non-sequential mapping regression
+      - name: Run malformed schema and runtime controls
         run: |
-          build/debug/test/unittest \
-            "Arrow sparse union maps non-sequential type IDs"
+          build/debug/test/unittest "Arrow sparse union rejects duplicate schema type IDs"
+          build/debug/test/unittest "Arrow sparse union rejects a schema type-ID count mismatch"
+          build/debug/test/unittest "Arrow sparse union rejects an unmapped runtime type ID"
+          build/debug/test/unittest "Arrow sparse union rejects a negative runtime type ID"
 
-      - name: Run reordered in-range mapping regression
-        run: |
-          build/debug/test/unittest \
-            "Arrow sparse union maps reordered in-range type IDs"
-
-      - name: Retain exact generated patch and receipts
+      - name: Retain exact hardened patch and receipts
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: arrow-union-type-id-candidate-${{ github.run_id }}-${{ github.run_attempt }}
+          name: arrow-union-type-id-hardening-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            ${{ runner.temp }}/arrow-union-type-id.patch
+            ${{ runner.temp }}/arrow-union-type-id-hardened.patch
             ${{ runner.temp }}/candidate-generation.txt
             ${{ runner.temp }}/carrier-files.txt
             ${{ runner.temp }}/source-files.txt
