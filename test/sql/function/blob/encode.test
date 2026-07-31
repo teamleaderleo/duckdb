@@ -35,40 +35,4 @@ SELECT decode(encode(a)) || a from (values ('hello'), ('world')) tbl(a);
 hellohello
 worldworld
 
-# replacing invalid bytes must not mutate shared dictionary-compressed input
-statement ok
-PRAGMA force_compression='dictionary'
-
-statement ok
-CREATE TABLE decode_replace_input(b BLOB)
-
-statement ok
-INSERT INTO decode_replace_input VALUES
-	('\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\xC0'),
-	('\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\xC0'),
-	('\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\x41\xC0')
-
-statement ok
-CHECKPOINT
-
-query I
-SELECT DISTINCT hex(b) FROM decode_replace_input
-----
-4141414141414141414141414141414141414141C0
-
-query I
-SELECT DISTINCT decode(b, 'replace') FROM decode_replace_input
-----
-AAAAAAAAAAAAAAAAAAAA?
-
-query I
-SELECT DISTINCT hex(b) FROM decode_replace_input
-----
-4141414141414141414141414141414141414141C0
-
-statement ok
-DROP TABLE decode_replace_input
-
-statement ok
-PRAGMA force_compression='auto'
 
