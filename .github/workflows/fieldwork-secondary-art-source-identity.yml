@@ -1,0 +1,290 @@
+name: Fieldwork secondary ART source identity
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/fieldwork-secondary-art-checkpoint.yml'
+      - '.github/workflows/fieldwork-secondary-art-source-identity.yml'
+      - 'tools/fieldwork/secondary_art_checkpoint_probe.py'
+      - 'tools/fieldwork/secondary_art_source_identity_probe.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  source-identity:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - case_id: v1.3.2
+            source_ref: v1.3.2
+            expected_probe_status: 1
+          - case_id: v1.4.0
+            source_ref: v1.4.0
+            expected_probe_status: 0
+          - case_id: node-free-parent
+            source_ref: 65db3ee757413a6ad09504595e65983da134a80d^
+            expected_probe_status: -1
+          - case_id: node-free
+            source_ref: 65db3ee757413a6ad09504595e65983da134a80d
+            expected_probe_status: -1
+          - case_id: art-builder-parent
+            source_ref: 22e6d1e3751829d2d029636b75ff931710ca7cbc^
+            expected_probe_status: -1
+          - case_id: art-builder
+            source_ref: 22e6d1e3751829d2d029636b75ff931710ca7cbc
+            expected_probe_status: -1
+          - case_id: fork-main-20260729
+            source_ref: 2c9e51aa33dd07e928edae66304430aeb038edd7
+            expected_probe_status: -1
+    env:
+      CASE_ID: ${{ matrix.case_id }}
+      SOURCE_REF: ${{ matrix.source_ref }}
+      EXPECTED_PROBE_STATUS: ${{ matrix.expected_probe_status }}
+      ROW_COUNT: '2'
+    steps:
+      - name: Check out controlled fork carrier
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install source build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes ninja-build
+
+      - name: Resolve exact public source identity
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! git remote get-url public >/dev/null 2>&1; then
+            git remote add public https://github.com/duckdb/duckdb.git
+          fi
+          git fetch --force --tags public \
+            '+refs/heads/main:refs/remotes/public/main'
+          source_sha=$(git rev-parse "${SOURCE_REF}^{commit}")
+          source_dir="$RUNNER_TEMP/duckdb-source-$CASE_ID"
+          git worktree add --detach "$source_dir" "$source_sha"
+          {
+            printf 'source_sha=%s\n' "$source_sha"
+            printf 'source_dir=%s\n' "$source_dir"
+          } >>"$GITHUB_OUTPUT"
+          python - "$CASE_ID" "$SOURCE_REF" "$source_sha" <<'PY' \
+            | tee "source-$CASE_ID.json"
+          import json
+          import sys
+
+          print(
+              json.dumps(
+                  {
+                      "schema_version": 1,
+                      "case_id": sys.argv[1],
+                      "requested_ref": sys.argv[2],
+                      "source_sha": sys.argv[3],
+                  },
+                  sort_keys=True,
+              )
+          )
+          PY
+
+      - name: Build one exact source library
+        shell: bash
+        env:
+          SOURCE_DIR: ${{ steps.source.outputs.source_dir }}
+        run: |
+          set -euo pipefail
+          make -C "$SOURCE_DIR" release \
+            GEN=ninja \
+            DISABLE_SHELL=1
+          mapfile -t libraries < <(
+            find "$SOURCE_DIR/build/release" -type f -name 'libduckdb.so' -print
+          )
+          if [[ ${#libraries[@]} -ne 1 ]]; then
+            printf 'expected one libduckdb.so, found %s\n' "${#libraries[@]}" >&2
+            printf '%s\n' "${libraries[@]}" >&2
+            exit 2
+          fi
+          runtime="$RUNNER_TEMP/dual-engine-$CASE_ID"
+          mkdir -p "$runtime/writer" "$runtime/checkpointer"
+          cp "${libraries[0]}" "$runtime/writer/libduckdb.so"
+          cp "${libraries[0]}" "$runtime/checkpointer/libduckdb.so"
+          writer_identity=$(stat -c '%d:%i' "$runtime/writer/libduckdb.so")
+          checkpointer_identity=$(stat -c '%d:%i' "$runtime/checkpointer/libduckdb.so")
+          if [[ $writer_identity == "$checkpointer_identity" ]]; then
+            echo 'copied libraries unexpectedly share one inode' >&2
+            exit 2
+          fi
+          sha256sum \
+            "$runtime/writer/libduckdb.so" \
+            "$runtime/checkpointer/libduckdb.so" \
+            | tee "libraries-$CASE_ID.sha256"
+          printf '%s\n' "$runtime" >"runtime-$CASE_ID.txt"
+
+      - name: Run same-source dual-engine checkpoint probe
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ steps.source.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          runtime=$(cat "runtime-$CASE_ID.txt")
+          database="$PWD/secondary-art-source-$CASE_ID.duckdb"
+          set +e
+          python tools/fieldwork/secondary_art_source_identity_probe.py create \
+            "$runtime/writer/libduckdb.so" \
+            "$runtime/checkpointer/libduckdb.so" \
+            "$database" \
+            "$ROW_COUNT" \
+            "$SOURCE_SHA" \
+            | tee "create-$CASE_ID.json"
+          status=${PIPESTATUS[0]}
+          set -e
+          printf 'probe_status=%s\n' "$status" \
+            | tee "probe-status-$CASE_ID.txt"
+          if [[ $status -ne 0 && $status -ne 1 ]]; then
+            echo "source-identity probe setup failed with status $status" >&2
+            exit "$status"
+          fi
+
+      - name: Inspect persisted file in a fresh process
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ steps.source.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          runtime=$(cat "runtime-$CASE_ID.txt")
+          python tools/fieldwork/secondary_art_source_identity_probe.py inspect \
+            "$runtime/checkpointer/libduckdb.so" \
+            "$PWD/secondary-art-source-$CASE_ID.duckdb" \
+            "$ROW_COUNT" \
+            "$SOURCE_SHA" \
+            | tee "inspection-$CASE_ID.json"
+
+      - name: Upload exact source-identity evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: secondary-art-source-${{ matrix.case_id }}
+          path: |
+            source-${{ matrix.case_id }}.json
+            libraries-${{ matrix.case_id }}.sha256
+            runtime-${{ matrix.case_id }}.txt
+            create-${{ matrix.case_id }}.json
+            probe-status-${{ matrix.case_id }}.txt
+            inspection-${{ matrix.case_id }}.json
+            secondary-art-source-${{ matrix.case_id }}.duckdb
+            secondary-art-source-${{ matrix.case_id }}.duckdb.wal
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Classify source identity and wrong-result boundary
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ steps.source.outputs.source_sha }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import pathlib
+
+          def require(condition, message):
+              if not condition:
+                  raise SystemExit(message)
+
+          case_id = os.environ["CASE_ID"]
+          source_sha = os.environ["SOURCE_SHA"]
+          row_count = int(os.environ["ROW_COUNT"])
+          expected_status = int(os.environ["EXPECTED_PROBE_STATUS"])
+          status = int(
+              pathlib.Path(f"probe-status-{case_id}.txt")
+              .read_text()
+              .strip()
+              .split("=", 1)[1]
+          )
+          source = json.loads(pathlib.Path(f"source-{case_id}.json").read_text())
+          created = json.loads(pathlib.Path(f"create-{case_id}.json").read_text())
+          inspection = json.loads(
+              pathlib.Path(f"inspection-{case_id}.json").read_text()
+          )
+
+          for label, record, phase in (
+              ("source", source, None),
+              ("create", created, "create"),
+              ("inspection", inspection, "inspect"),
+          ):
+              require(
+                  type(record.get("schema_version")) is int
+                  and record["schema_version"] == 1,
+                  f"{case_id}: invalid {label} schema: {record}",
+              )
+              require(
+                  record.get("source_sha") == source_sha,
+                  f"{case_id}: {label} source mismatch: {record}",
+              )
+              if phase is not None:
+                  require(
+                      record.get("phase") == phase,
+                      f"{case_id}: {label} phase mismatch: {record}",
+                  )
+
+          writer = created.get("writer_library", {})
+          checkpointer = created.get("checkpointer_library", {})
+          require(
+              writer.get("sha256") == checkpointer.get("sha256"),
+              f"{case_id}: library bytes differ: {created}",
+          )
+          require(
+              (writer.get("device"), writer.get("inode"))
+              != (checkpointer.get("device"), checkpointer.get("inode")),
+              f"{case_id}: library inodes are not distinct: {created}",
+          )
+          require(
+              writer.get("open_address") != checkpointer.get("open_address"),
+              f"{case_id}: engine function addresses are not distinct: {created}",
+          )
+          require(
+              type(created.get("wrong_result")) is bool,
+              f"{case_id}: wrong_result is not an exact boolean: {created}",
+          )
+          require(
+              status == (0 if created["wrong_result"] else 1),
+              f"{case_id}: probe status and classification disagree: {created}",
+          )
+          if expected_status >= 0:
+              require(
+                  status == expected_status,
+                  f"{case_id}: expected status {expected_status}, got {status}",
+              )
+
+          require(
+              created.get("row_count") == row_count
+              and inspection.get("row_count") == row_count,
+              f"{case_id}: row-count metadata mismatch",
+          )
+          require(
+              created.get("full_count") == row_count
+              and inspection.get("full_count") == row_count,
+              f"{case_id}: full table count mismatch: {created} {inspection}",
+          )
+          require(
+              inspection.get("disabled_filtered_count") == 1
+              and inspection.get("disabled_terminal_count") == 1,
+              f"{case_id}: sequential-scan controls failed: {inspection}",
+          )
+          require(
+              inspection.get("first_values")
+              == list(range(1, min(row_count, 10) + 1)),
+              f"{case_id}: ordered values mismatch: {inspection}",
+          )
+          require(
+              inspection.get("enabled_filtered_count")
+              == created.get("filtered_count")
+              and inspection.get("enabled_terminal_count")
+              == created.get("terminal_filtered_count"),
+              f"{case_id}: fresh-process result disagrees with checkpoint process",
+          )
+          PY
