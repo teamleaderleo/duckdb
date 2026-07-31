@@ -41,6 +41,18 @@ jobs:
       - name: Build debug test runner
         run: GEN=ninja make debug
       - name: Run decode input-immutability regression
-        run: build/debug/test/run test/sql/function/blob/decode_replace_immutability.test
+        run: |
+          set -o pipefail
+          build/debug/test/run \
+            test/sql/function/blob/decode_replace_immutability.test \
+            2>&1 | tee decode-input-immutability.log
+      - name: Upload focused test transcript
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: decode-input-immutability-${{ github.run_id }}-${{ github.run_attempt }}
+          path: decode-input-immutability.log
+          if-no-files-found: error
+          retention-days: 7
       - name: Confirm clean tree
         run: test -z "$(git status --porcelain)"
