@@ -136,6 +136,20 @@ jobs:
             >"shutdown-$LABEL.json" \
             2>"shutdown-$LABEL.stderr"
 
+      - name: Phase A2 - repeat context-free shutdown without index bind
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ steps.source.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          runtime=$(cat "runtime-$LABEL.txt")
+          python tools/fieldwork/validate_art_wal_shutdown_fix.py repeat-shutdown \
+            "$runtime/shutdown/libduckdb.so" \
+            "$PWD/pr23848-$LABEL.duckdb" \
+            "$ROW_COUNT" "$SOURCE_SHA" \
+            >"repeat-$LABEL.json" \
+            2>"repeat-$LABEL.stderr"
+
       - name: Phase B - bind index and execute active-context checkpoint
         shell: bash
         env:
@@ -184,6 +198,7 @@ jobs:
               pathlib.Path(f"library-resolution-{label}.json").read_text()
           )
           shutdown = json.loads(pathlib.Path(f"shutdown-{label}.json").read_text())
+          repeat = json.loads(pathlib.Path(f"repeat-{label}.json").read_text())
           bind = json.loads(pathlib.Path(f"bind-{label}.json").read_text())
           inspection = json.loads(
               pathlib.Path(f"inspection-{label}.json").read_text()
@@ -195,6 +210,7 @@ jobs:
               raise SystemExit("library-resolution receipt invalid")
           for payload, phase in (
               (shutdown, "context-free-shutdown"),
+              (repeat, "repeat-context-free-shutdown"),
               (bind, "bind-and-explicit-checkpoint"),
               (inspection, "read-only-inspection"),
           ):
@@ -206,7 +222,7 @@ jobs:
                   raise SystemExit(f"{phase}: row-count mismatch")
 
           result = classify_lifecycle(
-              label, shutdown, bind, inspection, row_count
+              label, shutdown, repeat, bind, inspection, row_count
           )
           if result["classification"] != expected:
               raise SystemExit(
@@ -236,6 +252,8 @@ jobs:
             runtime-${{ matrix.label }}.txt
             shutdown-${{ matrix.label }}.json
             shutdown-${{ matrix.label }}.stderr
+            repeat-${{ matrix.label }}.json
+            repeat-${{ matrix.label }}.stderr
             bind-${{ matrix.label }}.json
             bind-${{ matrix.label }}.stderr
             inspection-${{ matrix.label }}.json
