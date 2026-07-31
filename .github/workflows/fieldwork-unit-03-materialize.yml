@@ -1,0 +1,86 @@
+name: Fieldwork unit 03 materialize and test
+
+on:
+  pull_request:
+    branches:
+      - fieldwork/base-duckdb-63094a6-clean
+    paths:
+      - 'fieldwork/unit_03_window_rows_following_overflow.patch'
+      - 'fieldwork/unit_03_test_rows_following_overflow.test'
+      - '.github/workflows/fieldwork-unit-03-materialize.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fieldwork-unit-03-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  materialize-and-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Check out clean source branch
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: fix/window-rows-following-overflow
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Check out execution carrier
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          path: .fieldwork-carrier
+          persist-credentials: false
+
+      - name: Materialize candidate
+        shell: bash
+        run: |
+          set -euxo pipefail
+          test "$(git rev-parse HEAD)" = "63094a6f725af5045113dda74e291c7d604f6a88"
+          git apply --check .fieldwork-carrier/fieldwork/unit_03_window_rows_following_overflow.patch
+          git apply .fieldwork-carrier/fieldwork/unit_03_window_rows_following_overflow.patch
+          cp .fieldwork-carrier/fieldwork/unit_03_test_rows_following_overflow.test \
+            test/sql/window/test_rows_following_overflow.test
+          rm -rf .fieldwork-carrier
+          git diff --check
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -y -qq
+          sudo apt-get install -y -qq ninja-build
+
+      - name: Configure focused Debug build
+        run: |
+          cmake -S . -B build/fieldwork -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DBUILD_EXTENSIONS='' \
+            -DFORCE_COLORED_OUTPUT=1
+
+      - name: Build native test runner
+        run: cmake --build build/fieldwork --target unittest --parallel 2
+
+      - name: Run focused regression
+        run: ./build/fieldwork/test/run 'test/sql/window/test_rows_following_overflow.test'
+
+      - name: Run ordinary window suite
+        run: ./build/fieldwork/test/run 'test/sql/window'
+
+      - name: Run formatting gate
+        run: make format-check
+
+      - name: Publish clean two-file source head
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git status --short
+          test "$(git status --short | wc -l)" = "2"
+          git config user.name fieldwork-bot
+          git config user.email fieldwork-bot@users.noreply.github.com
+          git add src/function/window/window_boundaries_state.cpp \
+            test/sql/window/test_rows_following_overflow.test
+          git commit -m 'fix(window): saturate ROWS FOLLOWING overflow at partition end'
+          git push origin HEAD:fix/window-rows-following-overflow
