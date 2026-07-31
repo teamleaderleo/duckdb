@@ -16,7 +16,24 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out exact pull-request head
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - name: Verify exact candidate identity
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test -f extension/core_functions/scalar/blob/encode.cpp
+          test -f test/sql/function/blob/decode_replace_immutability.test
+          git ls-files --error-unmatch \
+            extension/core_functions/scalar/blob/encode.cpp \
+            test/sql/function/blob/decode_replace_immutability.test
+          test -z "$(git status --porcelain)"
+          printf 'tested_sha=%s\n' "$EXPECTED_SHA"
       - name: Install build dependencies
         run: |
           sudo apt-get update
@@ -25,3 +42,5 @@ jobs:
         run: GEN=ninja make debug
       - name: Run decode input-immutability regression
         run: build/debug/test/run test/sql/function/blob/decode_replace_immutability.test
+      - name: Confirm clean tree
+        run: test -z "$(git status --porcelain)"
