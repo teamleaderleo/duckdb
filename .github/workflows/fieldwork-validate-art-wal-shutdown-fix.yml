@@ -1,0 +1,247 @@
+name: Fieldwork validate ART WAL shutdown fix
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/fieldwork-validate-art-wal-shutdown-fix.yml'
+      - 'tools/fieldwork/validate_art_wal_shutdown_fix.py'
+      - 'tools/fieldwork/test_validate_art_wal_shutdown_fix.py'
+      - 'tools/fieldwork/resolve_duckdb_shared_library.py'
+      - 'tools/fieldwork/test_resolve_duckdb_shared_library.py'
+      - 'tools/fieldwork/secondary_art_source_identity_probe.py'
+      - 'tools/fieldwork/VALIDATE_PUBLIC_PR_23848.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  parent-exact:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: parent
+            revision: parent
+            expected_classification: parent-corrupt-shutdown-checkpoint
+          - label: candidate
+            revision: exact
+            expected_classification: candidate-preserves-wal-and-heals-after-bind
+    env:
+      LABEL: ${{ matrix.label }}
+      REVISION: ${{ matrix.revision }}
+      EXPECTED_CLASSIFICATION: ${{ matrix.expected_classification }}
+      EXPECTED_FIX_HEAD: f47004f5d2098d5a4ed32e082a1703ccdbf28359
+      ROW_COUNT: '2'
+    steps:
+      - name: Check out controlled fork carrier
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes ninja-build
+
+      - name: Run resolver and lifecycle controls
+        run: |
+          python -m unittest \
+            tools.fieldwork.test_resolve_duckdb_shared_library \
+            tools.fieldwork.test_validate_art_wal_shutdown_fix
+
+      - name: Resolve public fix parent or exact head
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! git remote get-url public >/dev/null 2>&1; then
+            git remote add public https://github.com/duckdb/duckdb.git
+          fi
+          git fetch --force public \
+            '+refs/pull/23848/head:refs/remotes/public/pr-23848'
+          fix_head=$(git rev-parse 'refs/remotes/public/pr-23848^{commit}')
+          if [[ $fix_head != "$EXPECTED_FIX_HEAD" ]]; then
+            echo "public PR #23848 head moved: expected $EXPECTED_FIX_HEAD, observed $fix_head" >&2
+            exit 2
+          fi
+          if [[ $REVISION == parent ]]; then
+            source_sha=$(git rev-parse "$fix_head^")
+          elif [[ $REVISION == exact ]]; then
+            source_sha=$fix_head
+          else
+            echo "unknown revision selector: $REVISION" >&2
+            exit 2
+          fi
+          source_dir="$RUNNER_TEMP/duckdb-pr23848-$LABEL"
+          git worktree add --detach "$source_dir" "$source_sha"
+          {
+            printf 'source_sha=%s\n' "$source_sha"
+            printf 'source_dir=%s\n' "$source_dir"
+            printf 'fix_head=%s\n' "$fix_head"
+          } >>"$GITHUB_OUTPUT"
+          python - "$LABEL" "$REVISION" "$source_sha" "$fix_head" <<'PY' \
+            | tee "source-$LABEL.json"
+          import json
+          import sys
+          print(json.dumps({
+              "schema_version": 1,
+              "label": sys.argv[1],
+              "revision": sys.argv[2],
+              "source_sha": sys.argv[3],
+              "public_fix_head": sys.argv[4],
+          }, sort_keys=True))
+          PY
+
+      - name: Build one source and copy two independent engine images
+        shell: bash
+        env:
+          SOURCE_DIR: ${{ steps.source.outputs.source_dir }}
+        run: |
+          set -euo pipefail
+          make -C "$SOURCE_DIR" release GEN=ninja DISABLE_SHELL=1
+          runtime="$RUNNER_TEMP/pr23848-engines-$LABEL"
+          python tools/fieldwork/resolve_duckdb_shared_library.py \
+            "$SOURCE_DIR" \
+            --copy-to "$runtime/writer/libduckdb.so" \
+            --copy-to "$runtime/shutdown/libduckdb.so" \
+            --output "library-resolution-$LABEL.json" \
+            >"library-resolution-$LABEL.stdout"
+          writer_identity=$(stat -c '%d:%i' "$runtime/writer/libduckdb.so")
+          shutdown_identity=$(stat -c '%d:%i' "$runtime/shutdown/libduckdb.so")
+          if [[ $writer_identity == "$shutdown_identity" ]]; then
+            echo 'copied libraries unexpectedly share one inode' >&2
+            exit 2
+          fi
+          sha256sum \
+            "$runtime/writer/libduckdb.so" \
+            "$runtime/shutdown/libduckdb.so" \
+            | tee "libraries-$LABEL.sha256"
+          printf '%s\n' "$runtime" >"runtime-$LABEL.txt"
+
+      - name: Phase A - context-free shutdown with original writer open
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ steps.source.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          runtime=$(cat "runtime-$LABEL.txt")
+          database="$PWD/pr23848-$LABEL.duckdb"
+          python tools/fieldwork/validate_art_wal_shutdown_fix.py shutdown \
+            "$runtime/writer/libduckdb.so" \
+            "$runtime/shutdown/libduckdb.so" \
+            "$database" "$ROW_COUNT" "$SOURCE_SHA" \
+            >"shutdown-$LABEL.json" \
+            2>"shutdown-$LABEL.stderr"
+
+      - name: Phase B - bind index and execute active-context checkpoint
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ steps.source.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          runtime=$(cat "runtime-$LABEL.txt")
+          python tools/fieldwork/validate_art_wal_shutdown_fix.py bind-checkpoint \
+            "$runtime/shutdown/libduckdb.so" \
+            "$PWD/pr23848-$LABEL.duckdb" \
+            "$ROW_COUNT" "$SOURCE_SHA" \
+            >"bind-$LABEL.json" \
+            2>"bind-$LABEL.stderr"
+
+      - name: Phase C - verify persisted state read-only
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ steps.source.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          runtime=$(cat "runtime-$LABEL.txt")
+          python tools/fieldwork/validate_art_wal_shutdown_fix.py inspect \
+            "$runtime/shutdown/libduckdb.so" \
+            "$PWD/pr23848-$LABEL.duckdb" \
+            "$ROW_COUNT" "$SOURCE_SHA" \
+            >"inspection-$LABEL.json" \
+            2>"inspection-$LABEL.stderr"
+
+      - name: Classify exact lifecycle
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ steps.source.outputs.source_sha }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import pathlib
+          from tools.fieldwork.validate_art_wal_shutdown_fix import classify_lifecycle
+
+          label = os.environ["LABEL"]
+          source_sha = os.environ["SOURCE_SHA"]
+          row_count = int(os.environ["ROW_COUNT"])
+          expected = os.environ["EXPECTED_CLASSIFICATION"]
+          source = json.loads(pathlib.Path(f"source-{label}.json").read_text())
+          resolution = json.loads(
+              pathlib.Path(f"library-resolution-{label}.json").read_text()
+          )
+          shutdown = json.loads(pathlib.Path(f"shutdown-{label}.json").read_text())
+          bind = json.loads(pathlib.Path(f"bind-{label}.json").read_text())
+          inspection = json.loads(
+              pathlib.Path(f"inspection-{label}.json").read_text()
+          )
+
+          if source["source_sha"] != source_sha:
+              raise SystemExit("source receipt mismatch")
+          if resolution.get("schema_version") != 1:
+              raise SystemExit("library-resolution receipt invalid")
+          for payload, phase in (
+              (shutdown, "context-free-shutdown"),
+              (bind, "bind-and-explicit-checkpoint"),
+              (inspection, "read-only-inspection"),
+          ):
+              if payload.get("source_sha") != source_sha:
+                  raise SystemExit(f"{phase}: source identity mismatch")
+              if payload.get("phase") != phase:
+                  raise SystemExit(f"{phase}: phase identity mismatch")
+              if payload.get("row_count") != row_count:
+                  raise SystemExit(f"{phase}: row-count mismatch")
+
+          result = classify_lifecycle(
+              label, shutdown, bind, inspection, row_count
+          )
+          if result["classification"] != expected:
+              raise SystemExit(
+                  f"expected {expected}, observed {result['classification']}"
+              )
+          result.update({
+              "source_sha": source_sha,
+              "public_fix_head": source["public_fix_head"],
+              "library_resolution": resolution,
+          })
+          pathlib.Path(f"summary-{label}.json").write_text(
+              json.dumps(result, indent=2, sort_keys=True) + "\n"
+          )
+          print(json.dumps(result, sort_keys=True))
+          PY
+
+      - name: Upload parent/exact lifecycle evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: art-wal-shutdown-fix-${{ matrix.label }}
+          path: |
+            source-${{ matrix.label }}.json
+            library-resolution-${{ matrix.label }}.json
+            library-resolution-${{ matrix.label }}.stdout
+            libraries-${{ matrix.label }}.sha256
+            runtime-${{ matrix.label }}.txt
+            shutdown-${{ matrix.label }}.json
+            shutdown-${{ matrix.label }}.stderr
+            bind-${{ matrix.label }}.json
+            bind-${{ matrix.label }}.stderr
+            inspection-${{ matrix.label }}.json
+            inspection-${{ matrix.label }}.stderr
+            summary-${{ matrix.label }}.json
+            pr23848-${{ matrix.label }}.duckdb
+            pr23848-${{ matrix.label }}.duckdb.wal
+          if-no-files-found: warn
+          retention-days: 14
