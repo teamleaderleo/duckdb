@@ -1,0 +1,72 @@
+name: Fieldwork unit 04 owner review
+
+on:
+  push:
+    branches:
+      - fieldwork/unit04-owner-review-execution-1c931ed
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fieldwork-unit04-owner-review-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      BASE_SHA: 81fcce7fa76a320dc65be54cb0825e5315ac6f5b
+      SOURCE_SHA: 1c931ed41822f0e27d66afb636be2730695dcf8d
+      GEN: ninja
+    steps:
+      - name: Check out exact clean source head
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+          fetch-depth: 0
+
+      - name: Verify source generation and two-file fence
+        shell: bash
+        run: |
+          set -euxo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test "$(git rev-parse HEAD^)" = "$BASE_SHA"
+          git diff --check "$BASE_SHA" "$SOURCE_SHA"
+          git diff --name-only "$BASE_SHA" "$SOURCE_SHA" | sort > /tmp/actual-files
+          printf '%s\n' \
+            src/execution/operator/persistent/physical_copy_to_file.cpp \
+            test/sql/copy/parquet/parquet_hive_default_collision.test \
+            | sort > /tmp/expected-files
+          diff -u /tmp/expected-files /tmp/actual-files
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -y -qq
+          sudo apt-get install -y -qq ninja-build
+
+      - name: Run repository prepare and generated-file gates
+        run: |
+          make test_ci
+          make -j4 format_tools
+          make format-check-silent enum-integrity-check extension-patch-check -j2 -Otarget
+          make generate-files
+          git diff --exit-code
+
+      - name: Configure native debug build with Parquet
+        run: |
+          cmake -S . -B build/unit04-owner-review -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DBUILD_EXTENSIONS=parquet \
+            -DFORCE_COLORED_OUTPUT=1
+
+      - name: Build native test runner
+        run: cmake --build build/unit04-owner-review --target unittest --parallel 2
+
+      - name: Run focused unit 04 regression
+        run: ./build/unit04-owner-review/test/run 'test/sql/copy/parquet/parquet_hive_default_collision.test'
+
+      - name: Run complete native unit-test runner
+        run: ./build/unit04-owner-review/test/run
