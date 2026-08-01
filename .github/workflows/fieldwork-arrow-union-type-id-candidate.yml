@@ -55,6 +55,7 @@ jobs:
         env:
           PATCH: ${{ runner.temp }}/arrow-union-type-id-hardened.patch
           SOURCE_FILES: ${{ runner.temp }}/source-files.txt
+          SOURCE_BUNDLE: ${{ runner.temp }}/generated-source
           COUNTS: ${{ runner.temp }}/candidate-generation.txt
         run: |
           set -euo pipefail
@@ -74,8 +75,11 @@ jobs:
           diff -u "${{ runner.temp }}/expected-source-files.txt" "$SOURCE_FILES"
           git diff -- $(cat "$SOURCE_FILES") > "$PATCH"
           test -s "$PATCH"
+          mkdir -p "$SOURCE_BUNDLE"
+          cp --parents $(cat "$SOURCE_FILES") "$SOURCE_BUNDLE"
           grep -F 'FIELDWORK_262_PATCH=arrow-union-type-id-mapping' "$COUNTS"
           grep -F 'FIELDWORK_262_HARDENING=duplicate-type-id-rejection' "$COUNTS"
+          grep -F 'FIELDWORK_262_REPAIR=union-child-parent-offset' "$COUNTS"
 
       - name: Install build dependencies
         run: |
@@ -109,5 +113,6 @@ jobs:
             ${{ runner.temp }}/candidate-generation.txt
             ${{ runner.temp }}/carrier-files.txt
             ${{ runner.temp }}/source-files.txt
+            ${{ runner.temp }}/generated-source
           if-no-files-found: warn
           retention-days: 14
