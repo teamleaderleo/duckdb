@@ -47,8 +47,18 @@ jobs:
             test/sql/window/test_rows_following_overflow.test
           rm -rf .fieldwork-carrier
           git diff --check
-          git diff --name-only | sort | tee "${RUNNER_TEMP}/unit-03-changed-files.txt"
+          {
+            git diff --name-only
+            git ls-files --others --exclude-standard
+          } | sort -u | tee "${RUNNER_TEMP}/unit-03-changed-files.txt"
+          cat > "${RUNNER_TEMP}/unit-03-expected-files.txt" <<'EOF'
+          src/function/window/window_boundaries_state.cpp
+          test/sql/window/test_rows_following_overflow.test
+          EOF
+          diff -u "${RUNNER_TEMP}/unit-03-expected-files.txt" "${RUNNER_TEMP}/unit-03-changed-files.txt"
           git diff > "${RUNNER_TEMP}/unit-03-candidate.patch"
+          find test/sql/window -type f -name '*.test_slow' -print | sort \
+            > "${RUNNER_TEMP}/unit-03-excluded-slow-tests.txt"
 
       - name: Install build dependencies
         run: |
@@ -63,7 +73,7 @@ jobs:
             -DFORCE_COLORED_OUTPUT=1
 
       - name: Build native test runner
-        run: cmake --build build/fieldwork --target unittest --parallel 2
+        run: cmake --build build/fieldwork --target unittest --parallel 4
 
       - name: Run focused regression
         shell: bash
@@ -72,11 +82,11 @@ jobs:
           ./build/fieldwork/test/run 'test/sql/window/test_rows_following_overflow.test' \
             2>&1 | tee "${RUNNER_TEMP}/unit-03-focused.log"
 
-      - name: Run ordinary window suite
+      - name: Run ordinary non-slow window suite
         shell: bash
         run: |
           set -o pipefail
-          ./build/fieldwork/test/run 'test/sql/window/*' \
+          ./build/fieldwork/test/run 'test/sql/window/*.test' \
             2>&1 | tee "${RUNNER_TEMP}/unit-03-window-suite.log"
 
       - name: Run formatting gate
@@ -93,9 +103,12 @@ jobs:
           path: |
             ${{ runner.temp }}/unit-03-candidate.patch
             ${{ runner.temp }}/unit-03-changed-files.txt
+            ${{ runner.temp }}/unit-03-expected-files.txt
+            ${{ runner.temp }}/unit-03-excluded-slow-tests.txt
             ${{ runner.temp }}/unit-03-focused.log
             ${{ runner.temp }}/unit-03-window-suite.log
             ${{ runner.temp }}/unit-03-format.log
+            test/sql/window/test_rows_following_overflow.test
           if-no-files-found: warn
           retention-days: 14
 
