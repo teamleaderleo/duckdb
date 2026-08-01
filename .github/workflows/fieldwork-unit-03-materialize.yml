@@ -47,6 +47,8 @@ jobs:
             test/sql/window/test_rows_following_overflow.test
           rm -rf .fieldwork-carrier
           git diff --check
+          git diff --name-only | sort | tee "${RUNNER_TEMP}/unit-03-changed-files.txt"
+          git diff > "${RUNNER_TEMP}/unit-03-candidate.patch"
 
       - name: Install build dependencies
         run: |
@@ -64,13 +66,38 @@ jobs:
         run: cmake --build build/fieldwork --target unittest --parallel 2
 
       - name: Run focused regression
-        run: ./build/fieldwork/test/run 'test/sql/window/test_rows_following_overflow.test'
+        shell: bash
+        run: |
+          set -o pipefail
+          ./build/fieldwork/test/run 'test/sql/window/test_rows_following_overflow.test' \
+            2>&1 | tee "${RUNNER_TEMP}/unit-03-focused.log"
 
       - name: Run ordinary window suite
-        run: ./build/fieldwork/test/run 'test/sql/window'
+        shell: bash
+        run: |
+          set -o pipefail
+          ./build/fieldwork/test/run 'test/sql/window/*' \
+            2>&1 | tee "${RUNNER_TEMP}/unit-03-window-suite.log"
 
       - name: Run formatting gate
-        run: make format-check
+        shell: bash
+        run: |
+          set -o pipefail
+          make format-check 2>&1 | tee "${RUNNER_TEMP}/unit-03-format.log"
+
+      - name: Upload unit 03 receipts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: unit-03-window-overflow-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/unit-03-candidate.patch
+            ${{ runner.temp }}/unit-03-changed-files.txt
+            ${{ runner.temp }}/unit-03-focused.log
+            ${{ runner.temp }}/unit-03-window-suite.log
+            ${{ runner.temp }}/unit-03-format.log
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Publish clean two-file source head
         shell: bash
