@@ -4,13 +4,17 @@ on:
   push:
     branches:
       - fieldwork/unit04-owner-review-execution-1c931ed
+  pull_request:
+    branches:
+      - upstream/04-hive-default-partition-marker
+    types: [opened, reopened, synchronize, ready_for_review]
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: fieldwork-unit04-owner-review-${{ github.ref }}
+  group: fieldwork-unit04-owner-review-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
