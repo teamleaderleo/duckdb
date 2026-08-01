@@ -2984,7 +2984,11 @@ PartitionDirectory PartitionFileRequestBuilder::BuildDirectory(string path) cons
 			if (partition_value.IsNull()) {
 				p_dir += "__HIVE_DEFAULT_PARTITION__";
 			} else {
-				p_dir += HivePartitioning::Escape(partition_value.ToString());
+				auto escaped_value = HivePartitioning::Escape(partition_value.ToString());
+				if (escaped_value == "__HIVE_DEFAULT_PARTITION__") {
+					escaped_value = "%5F" + escaped_value.substr(1);
+				}
+				p_dir += escaped_value;
 			}
 			result.path = fs.JoinPath(result.path, p_dir);
 			result.directories.push_back(result.path);
