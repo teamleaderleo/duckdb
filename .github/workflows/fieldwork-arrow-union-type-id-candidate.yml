@@ -10,7 +10,7 @@ on:
       - 'test/arrow/arrow_union_type_ids.cpp'
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: fieldwork-arrow-union-hardening-${{ github.event.pull_request.number }}
@@ -26,7 +26,6 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
-          persist-credentials: false
 
       - name: Verify exact child carrier identity
         env:
@@ -127,6 +126,54 @@ jobs:
           build/debug/test/unittest "Arrow sparse union rejects a schema type-ID count mismatch"
           build/debug/test/unittest "Arrow sparse union rejects an unmapped runtime type ID"
           build/debug/test/unittest "Arrow sparse union rejects an unmapped negative runtime type ID"
+
+      - name: Publish exact clean source candidate
+        env:
+          PATCH: ${{ runner.temp }}/arrow-union-type-id-hardened.patch
+          TARGET_BASE: 2c9e51aa33dd07e928edae66304430aeb038edd7
+          SOURCE_BRANCH: fix/arrow-union-type-id-mapping
+          TEST_CMAKE: ${{ runner.temp }}/arrow-test-CMakeLists.txt
+          TEST_SOURCE: ${{ runner.temp }}/arrow_union_type_ids.cpp
+        run: |
+          set -euo pipefail
+          git show HEAD:test/arrow/CMakeLists.txt > "$TEST_CMAKE"
+          git show HEAD:test/arrow/arrow_union_type_ids.cpp > "$TEST_SOURCE"
+          git fetch origin "$SOURCE_BRANCH"
+          test "$(git rev-parse FETCH_HEAD)" = "$TARGET_BASE"
+          git reset --hard "$TARGET_BASE"
+          git clean -fdx
+          git apply --check "$PATCH"
+          git apply "$PATCH"
+          cp "$TEST_CMAKE" test/arrow/CMakeLists.txt
+          cp "$TEST_SOURCE" test/arrow/arrow_union_type_ids.cpp
+          git add \
+            src/common/enum_util.cpp \
+            src/function/table/arrow.cpp \
+            src/function/table/arrow/arrow_duck_schema.cpp \
+            src/function/table/arrow/arrow_type_info.cpp \
+            src/function/table/arrow_conversion.cpp \
+            src/include/duckdb/function/table/arrow/arrow_type_info.hpp \
+            src/include/duckdb/function/table/arrow/enum/arrow_type_info_type.hpp \
+            test/arrow/CMakeLists.txt \
+            test/arrow/arrow_union_type_ids.cpp
+          cat > "${{ runner.temp }}/expected-published-files.txt" <<'EOF'
+          src/common/enum_util.cpp
+          src/function/table/arrow.cpp
+          src/function/table/arrow/arrow_duck_schema.cpp
+          src/function/table/arrow/arrow_type_info.cpp
+          src/function/table/arrow_conversion.cpp
+          src/include/duckdb/function/table/arrow/arrow_type_info.hpp
+          src/include/duckdb/function/table/arrow/enum/arrow_type_info_type.hpp
+          test/arrow/CMakeLists.txt
+          test/arrow/arrow_union_type_ids.cpp
+          EOF
+          git diff --cached --name-only | sort > "${{ runner.temp }}/published-files.txt"
+          diff -u "${{ runner.temp }}/expected-published-files.txt" "${{ runner.temp }}/published-files.txt"
+          git diff --cached --check
+          git config user.name fieldwork-repair-bot
+          git config user.email fieldwork-repair-bot@users.noreply.github.com
+          git commit -m "fix(arrow): map signed sparse union type IDs"
+          git push origin HEAD:"$SOURCE_BRANCH"
 
       - name: Retain exact hardened patch and receipts
         if: always()
