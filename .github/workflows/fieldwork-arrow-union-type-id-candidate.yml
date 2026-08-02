@@ -78,8 +78,31 @@ jobs:
           mkdir -p "$SOURCE_BUNDLE"
           cp --parents $(cat "$SOURCE_FILES") "$SOURCE_BUNDLE"
           grep -F 'FIELDWORK_262_PATCH=arrow-union-type-id-mapping' "$COUNTS"
-          grep -F 'FIELDWORK_262_HARDENING=duplicate-type-id-rejection' "$COUNTS"
+          grep -F 'FIELDWORK_262_HARDENING=signed-type-id-duplicate-rejection' "$COUNTS"
           grep -F 'FIELDWORK_262_REPAIR=union-child-parent-offset' "$COUNTS"
+
+      - name: Verify signed-byte map model
+        run: |
+          python - <<'PY'
+          invalid = None
+          mapping = [invalid] * 256
+          schema_ids = [-128, 0, 127]
+          for child_idx, type_id in enumerate(schema_ids):
+              key = type_id & 0xFF
+              assert mapping[key] is invalid
+              mapping[key] = child_idx
+          assert [mapping[type_id & 0xFF] for type_id in schema_ids] == [0, 1, 2]
+          assert mapping[-1 & 0xFF] is invalid
+          duplicate = False
+          try:
+              key = -128 & 0xFF
+              if mapping[key] is not invalid:
+                  raise ValueError('duplicate')
+          except ValueError:
+              duplicate = True
+          assert duplicate
+          print('signed union map model: passed')
+          PY
 
       - name: Install build dependencies
         run: |
@@ -94,14 +117,16 @@ jobs:
           build/debug/test/unittest "Arrow sparse union maps identity type IDs"
           build/debug/test/unittest "Arrow sparse union maps non-sequential type IDs"
           build/debug/test/unittest "Arrow sparse union maps reordered in-range type IDs"
+          build/debug/test/unittest "Arrow sparse union maps signed type IDs"
           build/debug/test/unittest "Arrow sparse union mapping honors a nonzero parent offset"
 
       - name: Run malformed schema and runtime controls
         run: |
           build/debug/test/unittest "Arrow sparse union rejects duplicate schema type IDs"
+          build/debug/test/unittest "Arrow sparse union rejects duplicate negative schema type IDs"
           build/debug/test/unittest "Arrow sparse union rejects a schema type-ID count mismatch"
           build/debug/test/unittest "Arrow sparse union rejects an unmapped runtime type ID"
-          build/debug/test/unittest "Arrow sparse union rejects a negative runtime type ID"
+          build/debug/test/unittest "Arrow sparse union rejects an unmapped negative runtime type ID"
 
       - name: Retain exact hardened patch and receipts
         if: always()
