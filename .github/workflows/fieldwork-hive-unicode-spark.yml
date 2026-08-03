@@ -1,4 +1,4 @@
-name: Fieldwork Hive Unicode Spark interoperability
+name: Fieldwork Hive Unicode Spark compatibility
 
 on:
   push:
