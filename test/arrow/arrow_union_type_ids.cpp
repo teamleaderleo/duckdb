@@ -65,7 +65,7 @@ static vector<Value> ScanSparseIntUnion(const char *format, const vector<int8_t>
 	const void *union_buffers[1] = {physical_type_ids.data()};
 	ArrowArray *union_child_array_ptrs[3] = {&child_arrays[0], &child_arrays[1], &child_arrays[2]};
 	ArrowArray union_array = {};
-	union_array.length = NumericCast<int64_t>(physical_count);
+	union_array.length = N_ROWS;
 	union_array.n_buffers = 1;
 	union_array.buffers = union_buffers;
 	union_array.n_children = 3;
