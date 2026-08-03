@@ -1,0 +1,125 @@
+name: Fieldwork Hive partition key alias scout
+
+on:
+  push:
+    branches:
+      - fieldwork/hive-key-alias-scout-b3062a5
+  pull_request:
+    branches:
+      - fieldwork/base-duckdb-b3062a5-clean
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fieldwork-hive-key-alias-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  characterize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      BASE_SHA: b3062a5e82f50d77ff6e1006a36f645a79bc4936
+      GEN: ninja
+    steps:
+      - name: Check out exact base plus workflow
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          fetch-depth: 0
+
+      - name: Verify branch fence
+        shell: bash
+        run: |
+          set -euxo pipefail
+          test "$(git merge-base HEAD "$BASE_SHA")" = "$BASE_SHA"
+          git diff --check "$BASE_SHA" HEAD
+          test "$(git diff --name-only "$BASE_SHA" HEAD)" = '.github/workflows/fieldwork-hive-key-alias-scout.yml'
+
+      - name: Install and build DuckDB
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo apt-get update -y -qq
+          sudo apt-get install -y -qq ninja-build
+          cmake -S . -B build/hive-key-alias -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DBUILD_EXTENSIONS=parquet \
+            -DFORCE_COLORED_OUTPUT=1
+          cmake --build build/hive-key-alias --target duckdb --parallel 2
+
+      - name: Characterize raw aliases and filters
+        shell: bash
+        run: |
+          set -euxo pipefail
+          CLI=./build/hive-key-alias/duckdb
+          ROOT=/tmp/duckdb-hive-key-alias
+          rm -rf "$ROOT"
+          mkdir -p "$ROOT"
+          "$CLI" -c "COPY (SELECT 1 AS id) TO '$ROOT/base.parquet' (FORMAT PARQUET);"
+
+          mkdir -p "$ROOT/lower-upper/a=first/A=second"
+          cp "$ROOT/base.parquet" "$ROOT/lower-upper/a=first/A=second/data.parquet"
+          actual=$("$CLI" -csv -noheader -c \
+            "SELECT a, id FROM parquet_scan('$ROOT/lower-upper/**/*.parquet', hive_partitioning=1);")
+          test "$actual" = 'second,1'
+          actual=$("$CLI" -csv -noheader -c \
+            "SELECT count(*) FROM parquet_scan('$ROOT/lower-upper/**/*.parquet', hive_partitioning=1) WHERE a='second';")
+          test "$actual" = '1'
+          actual=$("$CLI" -csv -noheader -c \
+            "SELECT count(*) FROM parquet_scan('$ROOT/lower-upper/**/*.parquet', hive_partitioning=1) WHERE a='first';")
+          test "$actual" = '0'
+
+          mkdir -p "$ROOT/upper-lower/A=first/a=second"
+          cp "$ROOT/base.parquet" "$ROOT/upper-lower/A=first/a=second/data.parquet"
+          actual=$("$CLI" -csv -noheader -c \
+            "SELECT a, id FROM parquet_scan('$ROOT/upper-lower/**/*.parquet', hive_partitioning=1);")
+          test "$actual" = 'first,1'
+          actual=$("$CLI" -csv -noheader -c \
+            "SELECT count(*) FROM parquet_scan('$ROOT/upper-lower/**/*.parquet', hive_partitioning=1) WHERE a='first';")
+          test "$actual" = '1'
+          actual=$("$CLI" -csv -noheader -c \
+            "SELECT count(*) FROM parquet_scan('$ROOT/upper-lower/**/*.parquet', hive_partitioning=1) WHERE a='second';")
+          test "$actual" = '0'
+
+          mkdir -p "$ROOT/repeated/a=first/a=second"
+          cp "$ROOT/base.parquet" "$ROOT/repeated/a=first/a=second/data.parquet"
+          actual=$("$CLI" -csv -noheader -c \
+            "SELECT a, id FROM parquet_scan('$ROOT/repeated/**/*.parquet', hive_partitioning=1);")
+          test "$actual" = 'first,1'
+
+          find "$ROOT" -print | sort
+
+      - name: Characterize percent aliases under proposed key decoding
+        shell: bash
+        run: |
+          set -euxo pipefail
+          CLI=./build/hive-key-alias/duckdb
+          ROOT=/tmp/duckdb-hive-key-alias
+          cp fieldwork-does-not-exist /tmp/never 2>/dev/null || true
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('src/common/hive_partitioning.cpp')
+          text = path.read_text()
+          old = 'string key = filename.substr(partition_start, equality_sign - partition_start);\n\t\t\t\tstring value ='
+          new = 'string key = filename.substr(partition_start, equality_sign - partition_start);\n\t\t\t\tkey = Unescape(key);\n\t\t\t\tstring value ='
+          assert old in text
+          path.write_text(text.replace(old, new, 1))
+          PY
+          cmake --build build/hive-key-alias --target duckdb --parallel 2
+
+          mkdir -p "$ROOT/lower-percent-upper/a=first/%41=second"
+          cp "$ROOT/base.parquet" "$ROOT/lower-percent-upper/a=first/%41=second/data.parquet"
+          actual=$("$CLI" -csv -noheader -c \
+            "SELECT a, id FROM parquet_scan('$ROOT/lower-percent-upper/**/*.parquet', hive_partitioning=1);")
+          test "$actual" = 'second,1'
+
+          mkdir -p "$ROOT/upper-percent-lower/A=first/%61=second"
+          cp "$ROOT/base.parquet" "$ROOT/upper-percent-lower/A=first/%61=second/data.parquet"
+          actual=$("$CLI" -csv -noheader -c \
+            "SELECT a, id FROM parquet_scan('$ROOT/upper-percent-lower/**/*.parquet', hive_partitioning=1);")
+          test "$actual" = 'first,1'
+
+          git diff --check
+          git diff -- src/common/hive_partitioning.cpp
