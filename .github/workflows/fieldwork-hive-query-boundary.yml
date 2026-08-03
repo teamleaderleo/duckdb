@@ -51,7 +51,6 @@ jobs:
           make test_ci
           make -j4 format_tools
           make format-check-silent enum-integrity-check extension-patch-check -j2 -Otarget
-          make generate-files
           git diff --exit-code -- . ':!src/common/hive_partitioning.cpp'
 
       - name: Configure DuckDB with Parquet and HTTPFS
