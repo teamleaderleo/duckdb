@@ -1,0 +1,160 @@
+name: Fieldwork Hive Unicode Spark interoperability
+
+on:
+  push:
+    branches:
+      - fieldwork/hive-unicode-spark-b3062a5
+  pull_request:
+    branches:
+      - fieldwork/base-duckdb-b3062a5-clean
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fieldwork-hive-unicode-spark-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  characterize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      BASE_SHA: b3062a5e82f50d77ff6e1006a36f645a79bc4936
+      GEN: ninja
+      SPARK_LOCAL_IP: 127.0.0.1
+    steps:
+      - name: Check out exact DuckDB base plus workflow
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          fetch-depth: 0
+
+      - name: Verify branch fence
+        shell: bash
+        run: |
+          set -euxo pipefail
+          test "$(git merge-base HEAD "$BASE_SHA")" = "$BASE_SHA"
+          git diff --check "$BASE_SHA" HEAD
+          test "$(git diff --name-only "$BASE_SHA" HEAD)" = '.github/workflows/fieldwork-hive-unicode-spark.yml'
+
+      - name: Install build and Spark dependencies
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo apt-get update -y -qq
+          sudo apt-get install -y -qq ninja-build
+          java -version
+          python3 -m pip install --upgrade pip
+          python3 -m pip install 'pyspark==4.2.0'
+
+      - name: Configure and build exact-main DuckDB with Parquet
+        run: |
+          cmake -S . -B build/hive-unicode-spark -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DBUILD_EXTENSIONS=parquet \
+            -DFORCE_COLORED_OUTPUT=1
+          cmake --build build/hive-unicode-spark --target duckdb --parallel 2
+
+      - name: Write Unicode partitions with DuckDB
+        shell: bash
+        run: |
+          set -euxo pipefail
+          CLI=./build/hive-unicode-spark/duckdb
+          ROOT=/tmp/duckdb-hive-unicode
+          rm -rf "$ROOT"
+          mkdir -p "$ROOT"
+
+          "$CLI" -c "COPY (SELECT '🦆'::VARCHAR AS p, 1 AS id) TO '$ROOT/duckdb-value' (FORMAT PARQUET, PARTITION_BY(p), OVERWRITE);"
+          "$CLI" -c "COPY (SELECT 'value'::VARCHAR AS \"🦆\", 2 AS id) TO '$ROOT/duckdb-key' (FORMAT PARQUET, PARTITION_BY(\"🦆\"), OVERWRITE);"
+          "$CLI" -c "COPY (SELECT 'é'::VARCHAR AS p, 3 AS id) TO '$ROOT/duckdb-accent' (FORMAT PARQUET, PARTITION_BY(p), OVERWRITE);"
+
+          find "$ROOT" -print | sort
+          test -d "$ROOT/duckdb-value/p=%F0%9F%A6%86"
+          test -d "$ROOT/duckdb-key/%F0%9F%A6%86=value"
+          test -d "$ROOT/duckdb-accent/p=%C3%A9"
+
+      - name: Read DuckDB partitions with Spark and write Spark controls
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cat > /tmp/hive_unicode_spark.py <<'PY'
+          import json
+          import os
+          from pyspark.sql import SparkSession
+
+          root = '/tmp/duckdb-hive-unicode'
+          duck = '🦆'
+          accent = 'é'
+          duck_mojibake = duck.encode('utf-8').decode('latin1')
+          accent_mojibake = accent.encode('utf-8').decode('latin1')
+
+          spark = (
+              SparkSession.builder
+              .master('local[1]')
+              .appName('fieldwork-hive-unicode')
+              .config('spark.ui.enabled', 'false')
+              .config('spark.sql.shuffle.partitions', '1')
+              .getOrCreate()
+          )
+          spark.sparkContext.setLogLevel('WARN')
+          receipt = {}
+          try:
+              value_df = spark.read.parquet(f'{root}/duckdb-value')
+              value_rows = [r.asDict(recursive=True) for r in value_df.collect()]
+              receipt['duckdb_value_schema'] = value_df.schema.simpleString()
+              receipt['duckdb_value_rows'] = value_rows
+              assert value_rows == [{'id': 1, 'p': duck_mojibake}], value_rows
+
+              key_df = spark.read.parquet(f'{root}/duckdb-key')
+              key_rows = [r.asDict(recursive=True) for r in key_df.collect()]
+              receipt['duckdb_key_schema'] = key_df.schema.simpleString()
+              receipt['duckdb_key_rows'] = key_rows
+              assert duck not in key_df.columns, key_df.columns
+              assert duck_mojibake in key_df.columns, key_df.columns
+              assert key_rows == [{'id': 2, duck_mojibake: 'value'}], key_rows
+
+              accent_df = spark.read.parquet(f'{root}/duckdb-accent')
+              accent_rows = [r.asDict(recursive=True) for r in accent_df.collect()]
+              receipt['duckdb_accent_schema'] = accent_df.schema.simpleString()
+              receipt['duckdb_accent_rows'] = accent_rows
+              assert accent_rows == [{'id': 3, 'p': accent_mojibake}], accent_rows
+
+              spark.createDataFrame([(duck, 10)], ['p', 'id']).write.mode('overwrite').partitionBy('p').parquet(
+                  f'{root}/spark-value'
+              )
+              spark.createDataFrame([('value', 20)], [duck, 'id']).write.mode('overwrite').partitionBy(duck).parquet(
+                  f'{root}/spark-key'
+              )
+              spark.createDataFrame([(accent, 30)], ['p', 'id']).write.mode('overwrite').partitionBy('p').parquet(
+                  f'{root}/spark-accent'
+              )
+          finally:
+              spark.stop()
+
+          with open('/tmp/hive-unicode-spark-receipt.json', 'w', encoding='utf-8') as f:
+              json.dump(receipt, f, ensure_ascii=False, indent=2, sort_keys=True)
+          print(json.dumps(receipt, ensure_ascii=False, indent=2, sort_keys=True))
+          PY
+          python3 /tmp/hive_unicode_spark.py
+          cat /tmp/hive-unicode-spark-receipt.json
+          find /tmp/duckdb-hive-unicode -print | sort
+
+      - name: Read Spark partitions with DuckDB
+        shell: bash
+        run: |
+          set -euxo pipefail
+          CLI=./build/hive-unicode-spark/duckdb
+          ROOT=/tmp/duckdb-hive-unicode
+
+          value=$("$CLI" -csv -noheader -c \
+            "SELECT p, id FROM parquet_scan('$ROOT/spark-value/**/*.parquet', hive_partitioning=1);")
+          test "$value" = '🦆,10'
+
+          key=$("$CLI" -csv -noheader -c \
+            "SELECT \"🦆\", id FROM parquet_scan('$ROOT/spark-key/**/*.parquet', hive_partitioning=1);")
+          test "$key" = 'value,20'
+
+          accent=$("$CLI" -csv -noheader -c \
+            "SELECT p, id FROM parquet_scan('$ROOT/spark-accent/**/*.parquet', hive_partitioning=1);")
+          test "$accent" = 'é,30'
