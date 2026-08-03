@@ -63,17 +63,26 @@ jobs:
       - name: Build CLI
         run: cmake --build build/hive-query-boundary --target duckdb --parallel 2
 
-      - name: Verify HTTP query boundary
+      - name: Verify URI metadata boundaries and local path compatibility
         shell: bash
         run: |
           set -euxo pipefail
           CLI=./build/hive-query-boundary/duckdb
           ROOT=/tmp/duckdb-hive-query-boundary
           rm -rf "$ROOT"
-          mkdir -p "$ROOT/p=real"
+          mkdir -p "$ROOT/p=real" "$ROOT/literal?segment/p=local" "$ROOT/literal#segment/p=hash"
           "$CLI" -c "COPY (SELECT 7 AS id) TO '$ROOT/data.parquet' (FORMAT PARQUET);"
           "$CLI" -c "COPY (SELECT 8 AS id) TO '$ROOT/p=real/data.parquet' (FORMAT PARQUET);"
           "$CLI" -c "COPY (SELECT 9 AS id) TO '$ROOT/second.parquet' (FORMAT PARQUET);"
+          "$CLI" -c "COPY (SELECT 10 AS id) TO '$ROOT/literal?segment/p=local/data.parquet' (FORMAT PARQUET);"
+          "$CLI" -c "COPY (SELECT 11 AS id) TO '$ROOT/literal#segment/p=hash/data.parquet' (FORMAT PARQUET);"
+
+          actual=$("$CLI" -csv -noheader -c \
+            "SELECT p, id FROM parquet_scan('$ROOT/literal?segment/p=local/data.parquet', hive_partitioning=1);")
+          test "$actual" = 'local,10'
+          actual=$("$CLI" -csv -noheader -c \
+            "SELECT p, id FROM parquet_scan('$ROOT/literal#segment/p=hash/data.parquet', hive_partitioning=1);")
+          test "$actual" = 'hash,11'
 
           python3 -m http.server 8123 --bind 127.0.0.1 --directory "$ROOT" \
             > /tmp/hive-query-http.log 2>&1 &
@@ -81,19 +90,20 @@ jobs:
           trap 'kill "$server_pid" || true' EXIT
           sleep 2
 
-          actual=$("$CLI" -csv -noheader -c \
-            "LOAD httpfs; SELECT id FROM parquet_scan('http://127.0.0.1:8123/data.parquet?redirect=/p=fake/file', hive_partitioning=1);")
-          test "$actual" = '7'
-
-          set +e
-          "$CLI" -c \
-            "LOAD httpfs; SELECT p FROM parquet_scan('http://127.0.0.1:8123/data.parquet?redirect=/p=fake/file', hive_partitioning=1);" \
-            > /tmp/no-phantom.log 2>&1
-          status=$?
-          set -e
-          cat /tmp/no-phantom.log
-          test "$status" -ne 0
-          grep -F 'Referenced column "p" not found' /tmp/no-phantom.log
+          for suffix in '?redirect=/p=fake/file' '#redirect=/p=fake/file'; do
+            actual=$("$CLI" -csv -noheader -c \
+              "LOAD httpfs; SELECT id FROM parquet_scan('http://127.0.0.1:8123/data.parquet${suffix}', hive_partitioning=1);")
+            test "$actual" = '7'
+            set +e
+            "$CLI" -c \
+              "LOAD httpfs; SELECT p FROM parquet_scan('http://127.0.0.1:8123/data.parquet${suffix}', hive_partitioning=1);" \
+              > /tmp/no-phantom.log 2>&1
+            status=$?
+            set -e
+            cat /tmp/no-phantom.log
+            test "$status" -ne 0
+            grep -F 'Referenced column "p" not found' /tmp/no-phantom.log
+          done
 
           actual=$("$CLI" -csv -noheader -c \
             "LOAD httpfs; SELECT p, id FROM parquet_scan('http://127.0.0.1:8123/p=real/data.parquet?redirect=/q=fake/file', hive_partitioning=1);")
