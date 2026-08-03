@@ -97,7 +97,6 @@ jobs:
           set -euxo pipefail
           CLI=./build/hive-key-alias/duckdb
           ROOT=/tmp/duckdb-hive-key-alias
-          cp fieldwork-does-not-exist /tmp/never 2>/dev/null || true
           python3 - <<'PY'
           from pathlib import Path
           path = Path('src/common/hive_partitioning.cpp')
