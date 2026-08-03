@@ -82,6 +82,39 @@ left	up	20
 left	down	21
 right	up	22
 
+# Type auto-detection and explicit hive_types use the decoded key.
+statement ok
+CREATE TABLE typed_escaped_key(
+    "typed=key" INTEGER,
+    id INTEGER
+);
+
+statement ok
+INSERT INTO typed_escaped_key VALUES (41, 40), (42, 41);
+
+statement ok
+COPY typed_escaped_key TO '{TEST_DIR}/typed-escaped-key'
+(FORMAT PARQUET, PARTITION_BY ("typed=key"), OVERWRITE);
+
+query III
+SELECT typeof("typed=key"), "typed=key", id
+FROM parquet_scan('{TEST_DIR}/typed-escaped-key/**/*.parquet', hive_partitioning=1)
+ORDER BY id
+----
+BIGINT	41	40
+BIGINT	42	41
+
+query III
+SELECT typeof("typed=key"), "typed=key", id
+FROM parquet_scan(
+    '{TEST_DIR}/typed-escaped-key/**/*.parquet',
+    hive_types={'typed=key':'SMALLINT'}
+)
+ORDER BY id
+----
+SMALLINT	41	40
+SMALLINT	42	41
+
 # Non-canonical URL spellings are external names, not writer output, and stay literal.
 statement ok
 COPY (SELECT 30 AS id) TO '{TEST_DIR}/noncanonical/%61=one/data.parquet' (FORMAT PARQUET);
