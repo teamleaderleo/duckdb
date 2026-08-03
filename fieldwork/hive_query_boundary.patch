@@ -1,0 +1,15 @@
+diff --git a/src/common/hive_partitioning.cpp b/src/common/hive_partitioning.cpp
+index 76ffe210ef61..4ee7b39f4b4b 100644
+--- a/src/common/hive_partitioning.cpp
++++ b/src/common/hive_partitioning.cpp
+@@ -102,8 +102,8 @@ std::map<string, string> HivePartitioning::Parse(const string &filename) {
+ 	std::map<string, string> result;
+ 	for (idx_t c = 0; c < filename.size(); c++) {
+ 		if (filename[c] == '?' || filename[c] == '\n') {
+-			// get parameter or newline - not a partition
+-			candidate_partition = false;
++			// query parameters and newlines cannot contain path partitions
++			break;
+ 		}
+ 		if (filename[c] == '\\' || filename[c] == '/') {
+ 			// separator
