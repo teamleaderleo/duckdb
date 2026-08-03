@@ -1,0 +1,112 @@
+# name: test/sql/copy/partitioned/hive_partition_key_roundtrip.test
+# description: Round-trip canonical URL-escaped Hive partition column names
+# group: [partitioned]
+
+require parquet
+
+statement ok
+CREATE TABLE escaped_key_roundtrip(
+    "=/ \\/" VARCHAR,
+    id INTEGER
+);
+
+statement ok
+INSERT INTO escaped_key_roundtrip VALUES
+    ('alpha', 1),
+    ('beta', 2),
+    ('alpha', 3);
+
+statement ok
+COPY escaped_key_roundtrip TO '{TEST_DIR}/escaped-key-roundtrip'
+(FORMAT PARQUET, PARTITION_BY ("=/ \\/"), OVERWRITE);
+
+query II
+SELECT "=/ \\/", count(*)
+FROM parquet_scan('{TEST_DIR}/escaped-key-roundtrip/**/*.parquet', hive_partitioning=1)
+GROUP BY ALL
+ORDER BY ALL
+----
+alpha	2
+beta	1
+
+query I
+SELECT id
+FROM parquet_scan('{TEST_DIR}/escaped-key-roundtrip/**/*.parquet', hive_partitioning=1)
+WHERE "=/ \\/" = 'beta';
+----
+2
+
+# Decode exactly once: the writer escapes the percent sign before the literal triplet.
+statement ok
+CREATE TABLE percent_key_roundtrip(
+    "%2F" VARCHAR,
+    id INTEGER
+);
+
+statement ok
+INSERT INTO percent_key_roundtrip VALUES ('value', 10);
+
+statement ok
+COPY percent_key_roundtrip TO '{TEST_DIR}/percent-key-roundtrip'
+(FORMAT PARQUET, PARTITION_BY ("%2F"), OVERWRITE);
+
+query II
+SELECT "%2F", id
+FROM parquet_scan('{TEST_DIR}/percent-key-roundtrip/**/*.parquet', hive_partitioning=1);
+----
+value	10
+
+statement ok
+CREATE TABLE nested_escaped_keys(
+    "a=b" VARCHAR,
+    "x/y" VARCHAR,
+    id INTEGER
+);
+
+statement ok
+INSERT INTO nested_escaped_keys VALUES
+    ('left', 'up', 20),
+    ('left', 'down', 21),
+    ('right', 'up', 22);
+
+statement ok
+COPY nested_escaped_keys TO '{TEST_DIR}/nested-escaped-keys'
+(FORMAT PARQUET, PARTITION_BY ("a=b", "x/y"), OVERWRITE);
+
+query III
+SELECT "a=b", "x/y", id
+FROM parquet_scan('{TEST_DIR}/nested-escaped-keys/**/*.parquet', hive_partitioning=1)
+ORDER BY id
+----
+left	up	20
+left	down	21
+right	up	22
+
+# Non-canonical URL spellings are external names, not writer output, and stay literal.
+statement ok
+COPY (SELECT 30 AS id) TO '{TEST_DIR}/noncanonical/%61=one/data.parquet' (FORMAT PARQUET);
+
+query II
+SELECT "%61", id
+FROM parquet_scan('{TEST_DIR}/noncanonical/**/*.parquet', hive_partitioning=1);
+----
+one	30
+
+# Malformed and invalid-UTF8 percent spellings remain literal external keys.
+statement ok
+COPY (SELECT 31 AS id) TO '{TEST_DIR}/malformed/%ZZ=two/data.parquet' (FORMAT PARQUET);
+
+query II
+SELECT "%ZZ", id
+FROM parquet_scan('{TEST_DIR}/malformed/**/*.parquet', hive_partitioning=1);
+----
+two	31
+
+statement ok
+COPY (SELECT 32 AS id) TO '{TEST_DIR}/invalid-utf8/%FF=three/data.parquet' (FORMAT PARQUET);
+
+query II
+SELECT "%FF", id
+FROM parquet_scan('{TEST_DIR}/invalid-utf8/**/*.parquet', hive_partitioning=1);
+----
+three	32
