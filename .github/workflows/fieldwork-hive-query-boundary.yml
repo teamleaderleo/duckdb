@@ -29,17 +29,24 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Materialize candidate source
+      - name: Materialize candidate source and native tests
         shell: bash
         run: |
           set -euxo pipefail
           cp fieldwork/hive_query_boundary.patch /tmp/hive-query.patch
+          cp test/common/test_hive_partitioning.cpp /tmp/test_hive_partitioning.cpp
           git reset --hard "$BASE_SHA"
           rm -rf build
           git apply --check /tmp/hive-query.patch
           git apply /tmp/hive-query.patch
+          cp /tmp/test_hive_partitioning.cpp test/common/test_hive_partitioning.cpp
           git diff --check
-          test "$(git diff --name-only "$BASE_SHA")" = 'src/common/hive_partitioning.cpp'
+          diff_files=$(git diff --name-only "$BASE_SHA" | sort)
+          expected_files=$(printf '%s\n' \
+            src/common/hive_partitioning.cpp \
+            test/common/CMakeLists.txt \
+            test/common/test_hive_partitioning.cpp | sort)
+          test "$diff_files" = "$expected_files"
 
       - name: Install build dependencies
         run: |
@@ -51,7 +58,10 @@ jobs:
           make test_ci
           make -j4 format_tools
           make format-check-silent enum-integrity-check extension-patch-check -j2 -Otarget
-          git diff --exit-code -- . ':!src/common/hive_partitioning.cpp'
+          git diff --exit-code -- . \
+            ':!src/common/hive_partitioning.cpp' \
+            ':!test/common/CMakeLists.txt' \
+            ':!test/common/test_hive_partitioning.cpp'
 
       - name: Configure DuckDB with Parquet and HTTPFS
         run: |
@@ -60,8 +70,11 @@ jobs:
             -DBUILD_EXTENSIONS='parquet;httpfs' \
             -DFORCE_COLORED_OUTPUT=1
 
-      - name: Build CLI
-        run: cmake --build build/hive-query-boundary --target duckdb --parallel 2
+      - name: Build CLI and native test runner
+        run: cmake --build build/hive-query-boundary --target duckdb unittest --parallel 2
+
+      - name: Run native Hive parser regression
+        run: ./build/hive-query-boundary/test/unittest '[hive_partitioning]'
 
       - name: Verify URI metadata boundaries and local path compatibility
         shell: bash
