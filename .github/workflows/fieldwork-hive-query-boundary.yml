@@ -67,7 +67,7 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          CLI=./build/hive-query-boundary/duckdb
+          CLI="$(pwd)/build/hive-query-boundary/duckdb"
           ROOT=/tmp/duckdb-hive-query-boundary
           rm -rf "$ROOT"
           mkdir -p "$ROOT/p=real" "$ROOT/literal?segment/p=local" "$ROOT/literal#segment/p=hash" "$ROOT/C:/p=drive"
