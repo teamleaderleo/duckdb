@@ -14,9 +14,9 @@ static void NoOpArrayRelease(ArrowArray *array) {
 }
 
 static vector<Value> ScanSparseIntUnion(const char *format, const vector<int8_t> &physical_type_ids,
-                                        idx_t root_offset = 0, bool expect_error = false) {
+                                        idx_t union_offset = 0, bool expect_error = false) {
 	constexpr idx_t N_ROWS = 3;
-	const auto physical_count = N_ROWS + root_offset;
+	const auto physical_count = N_ROWS + union_offset;
 	REQUIRE(physical_type_ids.size() == physical_count);
 	const char *child_names[3] = {"zero", "one", "two"};
 
@@ -47,7 +47,7 @@ static vector<Value> ScanSparseIntUnion(const char *format, const vector<int8_t>
 	vector<vector<int32_t>> child_values(3, vector<int32_t>(physical_count));
 	for (idx_t child_idx = 0; child_idx < 3; child_idx++) {
 		for (idx_t physical_idx = 0; physical_idx < physical_count; physical_idx++) {
-			const auto logical_idx = physical_idx < root_offset ? 0 : physical_idx - root_offset;
+			const auto logical_idx = physical_idx < union_offset ? 0 : physical_idx - union_offset;
 			child_values[child_idx][physical_idx] = NumericCast<int32_t>((child_idx + 1) * 10 + logical_idx);
 		}
 	}
@@ -66,6 +66,7 @@ static vector<Value> ScanSparseIntUnion(const char *format, const vector<int8_t>
 	ArrowArray *union_child_array_ptrs[3] = {&child_arrays[0], &child_arrays[1], &child_arrays[2]};
 	ArrowArray union_array = {};
 	union_array.length = N_ROWS;
+	union_array.offset = NumericCast<int64_t>(union_offset);
 	union_array.n_buffers = 1;
 	union_array.buffers = union_buffers;
 	union_array.n_children = 3;
@@ -76,7 +77,6 @@ static vector<Value> ScanSparseIntUnion(const char *format, const vector<int8_t>
 	ArrowArray *root_child_array_ptrs[1] = {&union_array};
 	ArrowArray root_array = {};
 	root_array.length = N_ROWS;
-	root_array.offset = NumericCast<int64_t>(root_offset);
 	root_array.n_buffers = 1;
 	root_array.buffers = root_buffers;
 	root_array.n_children = 1;
