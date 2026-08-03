@@ -41,7 +41,10 @@ jobs:
           git apply /tmp/hive-query.patch
           cp /tmp/test_hive_partitioning.cpp test/common/test_hive_partitioning.cpp
           git diff --check
-          diff_files=$(git diff --name-only "$BASE_SHA" | sort)
+          diff_files=$({
+            git diff --name-only "$BASE_SHA"
+            git ls-files --others --exclude-standard
+          } | sort)
           expected_files=$(printf '%s\n' \
             src/common/hive_partitioning.cpp \
             test/common/CMakeLists.txt \
