@@ -80,14 +80,11 @@ jobs:
           set -euxo pipefail
           cat > /tmp/hive_unicode_spark.py <<'PY'
           import json
-          import os
           from pyspark.sql import SparkSession
 
           root = '/tmp/duckdb-hive-unicode'
           duck = '🦆'
           accent = 'é'
-          duck_mojibake = duck.encode('utf-8').decode('latin1')
-          accent_mojibake = accent.encode('utf-8').decode('latin1')
 
           spark = (
               SparkSession.builder
@@ -104,21 +101,20 @@ jobs:
               value_rows = [r.asDict(recursive=True) for r in value_df.collect()]
               receipt['duckdb_value_schema'] = value_df.schema.simpleString()
               receipt['duckdb_value_rows'] = value_rows
-              assert value_rows == [{'id': 1, 'p': duck_mojibake}], value_rows
+              assert value_rows == [{'id': 1, 'p': duck}], value_rows
 
               key_df = spark.read.parquet(f'{root}/duckdb-key')
               key_rows = [r.asDict(recursive=True) for r in key_df.collect()]
               receipt['duckdb_key_schema'] = key_df.schema.simpleString()
               receipt['duckdb_key_rows'] = key_rows
-              assert duck not in key_df.columns, key_df.columns
-              assert duck_mojibake in key_df.columns, key_df.columns
-              assert key_rows == [{'id': 2, duck_mojibake: 'value'}], key_rows
+              assert duck in key_df.columns, key_df.columns
+              assert key_rows == [{'id': 2, duck: 'value'}], key_rows
 
               accent_df = spark.read.parquet(f'{root}/duckdb-accent')
               accent_rows = [r.asDict(recursive=True) for r in accent_df.collect()]
               receipt['duckdb_accent_schema'] = accent_df.schema.simpleString()
               receipt['duckdb_accent_rows'] = accent_rows
-              assert accent_rows == [{'id': 3, 'p': accent_mojibake}], accent_rows
+              assert accent_rows == [{'id': 3, 'p': accent}], accent_rows
 
               spark.createDataFrame([(duck, 10)], ['p', 'id']).write.mode('overwrite').partitionBy('p').parquet(
                   f'{root}/spark-value'
