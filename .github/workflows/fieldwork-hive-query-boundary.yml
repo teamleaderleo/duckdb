@@ -35,6 +35,7 @@ jobs:
           set -euxo pipefail
           cp fieldwork/hive_query_boundary.patch /tmp/hive-query.patch
           git reset --hard "$BASE_SHA"
+          rm -rf build
           git apply --check /tmp/hive-query.patch
           git apply /tmp/hive-query.patch
           git diff --check
@@ -43,7 +44,7 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update -y -qq
-          sudo apt-get install -y -qq ninja-build
+          sudo apt-get install -y -qq ninja-build libcurl4-openssl-dev
 
       - name: Run repository preparation and formatting gates
         run: |
