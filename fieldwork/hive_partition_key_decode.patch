@@ -1,0 +1,41 @@
+diff --git a/src/common/hive_partitioning.cpp b/src/common/hive_partitioning.cpp
+index 76ffe210ef61..e5cffb15cf93 100644
+--- a/src/common/hive_partitioning.cpp
++++ b/src/common/hive_partitioning.cpp
+@@ -111,6 +111,7 @@ std::map<string, string> HivePartitioning::Parse(const string &filename) {
+ 			if (candidate_partition && equality_sign > partition_start) {
+ 				// we found a partition with an equality sign
+ 				string key = filename.substr(partition_start, equality_sign - partition_start);
++				key = Unescape(key);
+ 				string value = filename.substr(equality_sign + 1, c - equality_sign - 1);
+ 				result.insert(make_pair(std::move(key), std::move(value)));
+ 			}
+diff --git a/test/sql/copy/partitioned/hive_partition_escape.test b/test/sql/copy/partitioned/hive_partition_escape.test
+index 92bd75cb1659..96f99cb7f132 100644
+--- a/test/sql/copy/partitioned/hive_partition_escape.test
++++ b/test/sql/copy/partitioned/hive_partition_escape.test
+@@ -41,14 +41,20 @@ statement ok
+ COPY weird_tbl TO '{TEST_DIR}/escaped_partitions_names' (FORMAT PARQUET, PARTITION_BY("=/ \\/"))
+ 
+-statement error
++query II
+ select "=/ \\/", COUNT(*)
+ from parquet_scan('{TEST_DIR}/escaped_partitions_names/**/*.parquet')
+ GROUP BY ALL
+ ORDER BY ALL
+ ----
+-Binder Error: Referenced column "=/ \\/" not found in FROM clause!
++/	1
++===	3
++?:&	1
++\/\/	1
++value with strings	1
++🦆	1
++
++query I
++select id from parquet_scan('{TEST_DIR}/escaped_partitions_names/**/*.parquet') where "=/ \\/" = '?:&'
++----
++5
+ 
+ 
+ # if we write the partition column on files, it can be read
