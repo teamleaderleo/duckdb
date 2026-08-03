@@ -1,0 +1,104 @@
+name: Fieldwork Hive partition key candidate
+
+on:
+  push:
+    branches:
+      - fieldwork/hive-key-canonical-decode-b3062a5
+  pull_request:
+    branches:
+      - fieldwork/base-duckdb-b3062a5-clean
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fieldwork-hive-key-candidate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      BASE_SHA: b3062a5e82f50d77ff6e1006a36f645a79bc4936
+      GEN: ninja
+    steps:
+      - name: Check out candidate carrier
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          fetch-depth: 0
+
+      - name: Materialize candidate source
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cp fieldwork/hive_partition_key_canonical_decode.patch /tmp/hive-key.patch
+          cp test/sql/copy/partitioned/hive_partition_key_roundtrip.test /tmp/hive-key.test
+          git reset --hard "$BASE_SHA"
+          git apply --check /tmp/hive-key.patch
+          git apply /tmp/hive-key.patch
+          cp /tmp/hive-key.test test/sql/copy/partitioned/hive_partition_key_roundtrip.test
+          git diff --check
+          git diff --name-only "$BASE_SHA" | sort
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -y -qq
+          sudo apt-get install -y -qq ninja-build
+
+      - name: Run repository preparation and formatting gates
+        run: |
+          make test_ci
+          make -j4 format_tools
+          make format-check-silent enum-integrity-check extension-patch-check -j2 -Otarget
+          make generate-files
+          git diff --exit-code -- . ':!src/common/hive_partitioning.cpp' ':!test/sql/copy/partitioned/hive_partition_escape.test' ':!test/sql/copy/partitioned/hive_partition_key_roundtrip.test'
+
+      - name: Configure DuckDB with Parquet and HTTPFS
+        run: |
+          cmake -S . -B build/hive-key-candidate -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DBUILD_EXTENSIONS='parquet;httpfs' \
+            -DFORCE_COLORED_OUTPUT=1
+
+      - name: Build CLI and native test runner
+        run: cmake --build build/hive-key-candidate --target duckdb unittest --parallel 2
+
+      - name: Run existing escape regression
+        run: ./build/hive-key-candidate/test/run 'test/sql/copy/partitioned/hive_partition_escape.test'
+
+      - name: Run canonical key matrix
+        run: ./build/hive-key-candidate/test/run 'test/sql/copy/partitioned/hive_partition_key_roundtrip.test'
+
+      - name: Preserve repeated-key behavior
+        shell: bash
+        run: |
+          set -euxo pipefail
+          CLI=./build/hive-key-candidate/duckdb
+          ROOT=/tmp/duckdb-hive-key-repeat
+          rm -rf "$ROOT"
+          mkdir -p "$ROOT/repeated/a=first/a=second"
+          "$CLI" -c "COPY (SELECT 1 AS id) TO '$ROOT/repeated/a=first/a=second/data.parquet' (FORMAT PARQUET);"
+          actual=$("$CLI" -csv -noheader -c \
+            "SELECT a, id FROM parquet_scan('$ROOT/repeated/**/*.parquet', hive_partitioning=1);")
+          test "$actual" = 'first,1'
+
+      - name: Keep query-fragment probe independent
+        shell: bash
+        run: |
+          set -euxo pipefail
+          CLI=./build/hive-key-candidate/duckdb
+          ROOT=/tmp/duckdb-hive-key-http
+          rm -rf "$ROOT"
+          mkdir -p "$ROOT"
+          "$CLI" -c "COPY (SELECT 7 AS id) TO '$ROOT/data.parquet' (FORMAT PARQUET);"
+          python3 -m http.server 8123 --bind 127.0.0.1 --directory "$ROOT" \
+            > /tmp/hive-key-http.log 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" || true' EXIT
+          sleep 2
+          phantom=$("$CLI" -csv -noheader -c \
+            "LOAD httpfs; SELECT p, id FROM parquet_scan('http://127.0.0.1:8123/data.parquet?redirect=/p=value/file', hive_partitioning=1);")
+          test "$phantom" = 'value,7'
+          cat /tmp/hive-key-http.log
