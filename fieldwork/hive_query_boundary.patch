@@ -1,22 +1,18 @@
 diff --git a/src/common/hive_partitioning.cpp b/src/common/hive_partitioning.cpp
-index 76ffe210ef61..d185afec9904 100644
+index 76ffe210ef61..7ed9cf1075d6 100644
 --- a/src/common/hive_partitioning.cpp
 +++ b/src/common/hive_partitioning.cpp
-@@ -98,12 +98,17 @@ std::map<string, string> HivePartitioning::Parse(const string &filename) {
+@@ -98,9 +98,14 @@ std::map<string, string> HivePartitioning::Parse(const string &filename) {
  	idx_t partition_start = 0;
  	idx_t equality_sign = 0;
  	bool candidate_partition = true;
 +	const bool uri_path = filename.find("://") != string::npos;
  	std::map<string, string> result;
  	for (idx_t c = 0; c < filename.size(); c++) {
--		if (filename[c] == '?' || filename[c] == '\n') {
--			// get parameter or newline - not a partition
-+		if (filename[c] == '\n' || (uri_path && (filename[c] == '?' || filename[c] == '#'))) {
++		if (uri_path && (filename[c] == '?' || filename[c] == '#')) {
 +			// URI query and fragment text cannot contain path partitions
 +			break;
 +		}
-+		if (filename[c] == '?') {
-+			// A question mark in a local path invalidates only this segment
+ 		if (filename[c] == '?' || filename[c] == '\n') {
+ 			// get parameter or newline - not a partition
  			candidate_partition = false;
- 		}
- 		if (filename[c] == '\\' || filename[c] == '/') {
