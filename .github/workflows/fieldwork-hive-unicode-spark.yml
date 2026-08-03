@@ -37,6 +37,7 @@ jobs:
           test "$(git merge-base HEAD "$BASE_SHA")" = "$BASE_SHA"
           git diff --check "$BASE_SHA" HEAD
           test "$(git diff --name-only "$BASE_SHA" HEAD)" = '.github/workflows/fieldwork-hive-unicode-spark.yml'
+          rm -rf build
 
       - name: Install build and Spark dependencies
         shell: bash
