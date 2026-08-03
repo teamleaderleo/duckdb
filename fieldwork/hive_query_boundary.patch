@@ -42,3 +42,14 @@ index 76ffe210ef61..2e30d99683ad 100644
  		if (filename[c] == '?' || filename[c] == '\n') {
  			// get parameter or newline - not a partition
  			candidate_partition = false;
+diff --git a/test/common/CMakeLists.txt b/test/common/CMakeLists.txt
+--- a/test/common/CMakeLists.txt
++++ b/test/common/CMakeLists.txt
+@@ -14,6 +14,7 @@ add_library_unity(
+   test_file_system.cpp
+   test_caching_file_system_wrapper.cpp
+   test_external_file_cache.cpp
++  test_hive_partitioning.cpp
+   test_hyperlog.cpp
+   test_lru_cache.cpp
+   test_numeric_cast.cpp
