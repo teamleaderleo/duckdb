@@ -9,11 +9,14 @@ index 76ffe210ef61..c52fb0b0cafe 100644
  #include "duckdb/common/uhugeint.hpp"
  #include "duckdb/execution/expression_executor.hpp"
  #include "duckdb/planner/expression/bound_columnref_expression.hpp"
-@@ -92,6 +93,21 @@ bool HivePartitioning::IsNull(const string &input) {
+@@ -92,6 +93,24 @@ bool HivePartitioning::IsNull(const string &input) {
  	return StringUtil::CIEquals(input, "NULL") || input == "__HIVE_DEFAULT_PARTITION__";
  }
  
 +static string UnescapeKey(const string &key) {
++	if (key.find('%') == string::npos) {
++		return key;
++	}
 +	try {
 +		auto unescaped_key = HivePartitioning::Unescape(key);
 +		// Only decode canonical output from HivePartitioning::Escape. This restores
@@ -31,7 +34,7 @@ index 76ffe210ef61..c52fb0b0cafe 100644
  // matches hive partitions in file name. For example:
  // 	- s3://bucket/var1=value1/bla/bla/var2=value2
  //  - http(s)://domain(:port)/lala/kasdl/var1=value1/?not-a-var=not-a-value
-@@ -111,6 +127,7 @@ std::map<string, string> HivePartitioning::Parse(const string &filename) {
+@@ -111,6 +130,7 @@ std::map<string, string> HivePartitioning::Parse(const string &filename) {
  			if (candidate_partition && equality_sign > partition_start) {
  				// we found a partition with an equality sign
  				string key = filename.substr(partition_start, equality_sign - partition_start);
