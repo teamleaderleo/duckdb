@@ -71,18 +71,45 @@ jobs:
       - name: Run canonical key matrix
         run: ./build/hive-key-candidate/test/run 'test/sql/copy/partitioned/hive_partition_key_roundtrip.test'
 
-      - name: Preserve repeated-key behavior
+      - name: Characterize external key compatibility and repetition
         shell: bash
         run: |
           set -euxo pipefail
           CLI=./build/hive-key-candidate/duckdb
-          ROOT=/tmp/duckdb-hive-key-repeat
+          ROOT=/tmp/duckdb-hive-key-external
           rm -rf "$ROOT"
+          mkdir -p "$ROOT"
+          "$CLI" -c "COPY (SELECT 1 AS id) TO '$ROOT/base.parquet' (FORMAT PARQUET);"
+
+          mkdir -p "$ROOT/noncanonical/%61=one"
+          cp "$ROOT/base.parquet" "$ROOT/noncanonical/%61=one/data.parquet"
+          actual=$("$CLI" -csv -noheader -c \
+            "SELECT \"%61\", id FROM parquet_scan('$ROOT/noncanonical/**/*.parquet', hive_partitioning=1);")
+          test "$actual" = 'one,1'
+
+          mkdir -p "$ROOT/malformed/%ZZ=two"
+          cp "$ROOT/base.parquet" "$ROOT/malformed/%ZZ=two/data.parquet"
+          actual=$("$CLI" -csv -noheader -c \
+            "SELECT \"%ZZ\", id FROM parquet_scan('$ROOT/malformed/**/*.parquet', hive_partitioning=1);")
+          test "$actual" = 'two,1'
+
+          mkdir -p "$ROOT/invalid/%FF=three"
+          cp "$ROOT/base.parquet" "$ROOT/invalid/%FF=three/data.parquet"
+          actual=$("$CLI" -csv -noheader -c \
+            "SELECT \"%FF\", id FROM parquet_scan('$ROOT/invalid/**/*.parquet', hive_partitioning=1);")
+          test "$actual" = 'three,1'
+
           mkdir -p "$ROOT/repeated/a=first/a=second"
-          "$CLI" -c "COPY (SELECT 1 AS id) TO '$ROOT/repeated/a=first/a=second/data.parquet' (FORMAT PARQUET);"
+          cp "$ROOT/base.parquet" "$ROOT/repeated/a=first/a=second/data.parquet"
           actual=$("$CLI" -csv -noheader -c \
             "SELECT a, id FROM parquet_scan('$ROOT/repeated/**/*.parquet', hive_partitioning=1);")
           test "$actual" = 'first,1'
+
+          mkdir -p "$ROOT/raw-encoded/a=first/%61=second"
+          cp "$ROOT/base.parquet" "$ROOT/raw-encoded/a=first/%61=second/data.parquet"
+          actual=$("$CLI" -csv -noheader -c \
+            "SELECT a, \"%61\", id FROM parquet_scan('$ROOT/raw-encoded/**/*.parquet', hive_partitioning=1);")
+          test "$actual" = 'first,second,1'
 
       - name: Keep query-fragment probe independent
         shell: bash
