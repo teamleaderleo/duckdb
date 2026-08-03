@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - fieldwork/hive-key-scout-b3062a5
+  pull_request:
+    branches:
+      - fieldwork/base-duckdb-b3062a5-clean
   workflow_dispatch:
 
 permissions:
