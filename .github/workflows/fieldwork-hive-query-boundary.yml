@@ -1,0 +1,119 @@
+name: Fieldwork Hive query boundary
+
+on:
+  push:
+    branches:
+      - fieldwork/hive-query-boundary-b3062a5
+  pull_request:
+    branches:
+      - fieldwork/base-duckdb-b3062a5-clean
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fieldwork-hive-query-boundary-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      BASE_SHA: b3062a5e82f50d77ff6e1006a36f645a79bc4936
+      GEN: ninja
+    steps:
+      - name: Check out candidate carrier
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          fetch-depth: 0
+
+      - name: Materialize candidate source
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cp fieldwork/hive_query_boundary.patch /tmp/hive-query.patch
+          git reset --hard "$BASE_SHA"
+          git apply --check /tmp/hive-query.patch
+          git apply /tmp/hive-query.patch
+          git diff --check
+          test "$(git diff --name-only "$BASE_SHA")" = 'src/common/hive_partitioning.cpp'
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -y -qq
+          sudo apt-get install -y -qq ninja-build
+
+      - name: Run repository preparation and formatting gates
+        run: |
+          make test_ci
+          make -j4 format_tools
+          make format-check-silent enum-integrity-check extension-patch-check -j2 -Otarget
+          make generate-files
+          git diff --exit-code -- . ':!src/common/hive_partitioning.cpp'
+
+      - name: Configure DuckDB with Parquet and HTTPFS
+        run: |
+          cmake -S . -B build/hive-query-boundary -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DBUILD_EXTENSIONS='parquet;httpfs' \
+            -DFORCE_COLORED_OUTPUT=1
+
+      - name: Build CLI
+        run: cmake --build build/hive-query-boundary --target duckdb --parallel 2
+
+      - name: Verify HTTP query boundary
+        shell: bash
+        run: |
+          set -euxo pipefail
+          CLI=./build/hive-query-boundary/duckdb
+          ROOT=/tmp/duckdb-hive-query-boundary
+          rm -rf "$ROOT"
+          mkdir -p "$ROOT/p=real"
+          "$CLI" -c "COPY (SELECT 7 AS id) TO '$ROOT/data.parquet' (FORMAT PARQUET);"
+          "$CLI" -c "COPY (SELECT 8 AS id) TO '$ROOT/p=real/data.parquet' (FORMAT PARQUET);"
+          "$CLI" -c "COPY (SELECT 9 AS id) TO '$ROOT/second.parquet' (FORMAT PARQUET);"
+
+          python3 -m http.server 8123 --bind 127.0.0.1 --directory "$ROOT" \
+            > /tmp/hive-query-http.log 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" || true' EXIT
+          sleep 2
+
+          actual=$("$CLI" -csv -noheader -c \
+            "LOAD httpfs; SELECT id FROM parquet_scan('http://127.0.0.1:8123/data.parquet?redirect=/p=fake/file', hive_partitioning=1);")
+          test "$actual" = '7'
+
+          set +e
+          "$CLI" -c \
+            "LOAD httpfs; SELECT p FROM parquet_scan('http://127.0.0.1:8123/data.parquet?redirect=/p=fake/file', hive_partitioning=1);" \
+            > /tmp/no-phantom.log 2>&1
+          status=$?
+          set -e
+          cat /tmp/no-phantom.log
+          test "$status" -ne 0
+          grep -F 'Referenced column "p" not found' /tmp/no-phantom.log
+
+          actual=$("$CLI" -csv -noheader -c \
+            "LOAD httpfs; SELECT p, id FROM parquet_scan('http://127.0.0.1:8123/p=real/data.parquet?redirect=/q=fake/file', hive_partitioning=1);")
+          test "$actual" = 'real,8'
+
+          set +e
+          "$CLI" -c \
+            "LOAD httpfs; SELECT q FROM parquet_scan('http://127.0.0.1:8123/p=real/data.parquet?redirect=/q=fake/file', hive_partitioning=1);" \
+            > /tmp/no-query-column.log 2>&1
+          status=$?
+          set -e
+          cat /tmp/no-query-column.log
+          test "$status" -ne 0
+          grep -F 'Referenced column "q" not found' /tmp/no-query-column.log
+
+          actual=$("$CLI" -csv -noheader -c \
+            "LOAD httpfs; SELECT count(*) FROM parquet_scan([\
+              'http://127.0.0.1:8123/data.parquet?redirect=/q=fake/file',\
+              'http://127.0.0.1:8123/second.parquet?redirect=/r=fake/file'\
+            ], hive_partitioning=1);")
+          test "$actual" = '2'
+
+          cat /tmp/hive-query-http.log
