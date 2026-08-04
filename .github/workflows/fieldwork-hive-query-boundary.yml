@@ -4,9 +4,6 @@ on:
   push:
     branches:
       - fieldwork/hive-query-boundary-b3062a5
-  pull_request:
-    branches:
-      - fieldwork/base-duckdb-b3062a5-clean
   workflow_dispatch:
 
 permissions:
@@ -23,6 +20,7 @@ jobs:
     env:
       BASE_SHA: daa81697e31a3dc97a93f11220037cd2213af6cd
       SOURCE_BRANCH: fieldwork/hive-uri-boundary-daa8169
+      CARRIER_BRANCH: fieldwork/hive-query-boundary-b3062a5
       GEN: ninja
     steps:
       - name: Check out clean current-main source branch
@@ -42,121 +40,11 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-
-          source_path = Path('src/common/hive_partitioning.cpp')
-          source = source_path.read_text()
-
-          if 'static bool HasURIScheme(const string &filename)' not in source:
-              marker = '''bool HivePartitioning::IsNull(const string &input) {
-          \treturn StringUtil::CIEquals(input, "NULL") || input == "__HIVE_DEFAULT_PARTITION__";
-          }
-
-          '''
-              helper = '''static bool HasURIScheme(const string &filename) {
-          \tauto scheme_end = filename.find("://");
-          \tif (scheme_end == string::npos || scheme_end <= 1) {
-          \t\t// A one-character prefix can be a Windows drive letter.
-          \t\treturn false;
-          \t}
-          \tif (!((filename[0] >= 'a' && filename[0] <= 'z') || (filename[0] >= 'A' && filename[0] <= 'Z'))) {
-          \t\treturn false;
-          \t}
-          \tfor (idx_t i = 1; i < scheme_end; i++) {
-          \t\tauto c = filename[i];
-          \t\tif (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '+' ||
-          \t\t      c == '-' || c == '.')) {
-          \t\t\treturn false;
-          \t\t}
-          \t}
-          \treturn true;
-          }
-
-          '''
-              if marker not in source:
-                  raise RuntimeError('IsNull insertion point changed')
-              source = source.replace(marker, marker + helper, 1)
-
-              state_marker = '''\tbool candidate_partition = true;
-          \tstd::map<string, string> result;
-          '''
-              state_replacement = '''\tbool candidate_partition = true;
-          \tconst bool uri_path = HasURIScheme(filename);
-          \tstd::map<string, string> result;
-          '''
-              if state_marker not in source:
-                  raise RuntimeError('Parse state insertion point changed')
-              source = source.replace(state_marker, state_replacement, 1)
-
-              loop_marker = '''\tfor (idx_t c = 0; c < filename.size(); c++) {
-          \t\tif (filename[c] == '?' || filename[c] == '\\n') {
-          '''
-              loop_replacement = '''\tfor (idx_t c = 0; c < filename.size(); c++) {
-          \t\tif (uri_path && (filename[c] == '?' || filename[c] == '#')) {
-          \t\t\t// URI query and fragment text cannot contain path partitions
-          \t\t\tbreak;
-          \t\t}
-          \t\tif (filename[c] == '?' || filename[c] == '\\n') {
-          '''
-              if loop_marker not in source:
-                  raise RuntimeError('Parse loop insertion point changed')
-              source = source.replace(loop_marker, loop_replacement, 1)
-              source_path.write_text(source)
-
-          cmake_path = Path('test/common/CMakeLists.txt')
-          cmake = cmake_path.read_text()
-          if 'test_hive_partitioning.cpp' not in cmake:
-              marker = '  test_external_file_cache.cpp\n'
-              if marker not in cmake:
-                  raise RuntimeError('test/common CMake insertion point changed')
-              cmake = cmake.replace(marker, marker + '  test_hive_partitioning.cpp\n', 1)
-              cmake_path.write_text(cmake)
-
-          test_path = Path('test/common/test_hive_partitioning.cpp')
-          test_path.write_text('''#include "duckdb/common/hive_partitioning.hpp"
-          #include "catch.hpp"
-
-          using namespace duckdb;
-
-          TEST_CASE("Hive partition parsing stops at URI metadata boundaries", "[hive_partitioning]") {
-          \tauto query = HivePartitioning::Parse("https://host/p=real/file.parquet?redirect=/q=fake/file");
-          \tREQUIRE(query.size() == 1);
-          \tREQUIRE(query.at("p") == "real");
-          \tREQUIRE(query.find("q") == query.end());
-
-          \tauto fragment = HivePartitioning::Parse("https://host/p=real/file.parquet#redirect=/q=fake/file");
-          \tREQUIRE(fragment.size() == 1);
-          \tREQUIRE(fragment.at("p") == "real");
-          \tREQUIRE(fragment.find("q") == fragment.end());
-
-          \tauto custom_scheme =
-          \t    HivePartitioning::Parse("s3+test://bucket/p=real/file.parquet?redirect=/q=fake/file");
-          \tREQUIRE(custom_scheme.size() == 1);
-          \tREQUIRE(custom_scheme.at("p") == "real");
-          \tREQUIRE(custom_scheme.find("q") == custom_scheme.end());
-          }
-
-          TEST_CASE("Hive partition parsing preserves local path characters", "[hive_partitioning]") {
-          \tauto question_mark = HivePartitioning::Parse("/tmp/literal?segment/p=local/file.parquet");
-          \tREQUIRE(question_mark.size() == 1);
-          \tREQUIRE(question_mark.at("p") == "local");
-
-          \tauto fragment = HivePartitioning::Parse("/tmp/literal#segment/p=hash/file.parquet");
-          \tREQUIRE(fragment.size() == 1);
-          \tREQUIRE(fragment.at("p") == "hash");
-
-          \tauto windows_drive = HivePartitioning::Parse("C://p=drive/file.parquet");
-          \tREQUIRE(windows_drive.size() == 1);
-          \tREQUIRE(windows_drive.at("p") == "drive");
-
-          \tauto embedded_scheme_text = HivePartitioning::Parse("relative/http://p=local/file.parquet");
-          \tREQUIRE(embedded_scheme_text.size() == 1);
-          \tREQUIRE(embedded_scheme_text.at("p") == "local");
-          }
-          ''')
-          PY
-
+          git fetch origin "$CARRIER_BRANCH"
+          git show "origin/$CARRIER_BRANCH:fieldwork/materialize_hive_uri_boundary.py" > /tmp/materialize_hive_uri_boundary.py
+          git show "origin/$CARRIER_BRANCH:test/common/test_hive_partitioning.cpp" > /tmp/test_hive_partitioning.cpp
+          python3 /tmp/materialize_hive_uri_boundary.py
+          cp /tmp/test_hive_partitioning.cpp test/common/test_hive_partitioning.cpp
           git diff --check
           diff_files=$({
             git diff --name-only "$BASE_SHA"
@@ -173,11 +61,15 @@ jobs:
           sudo apt-get update -y -qq
           sudo apt-get install -y -qq ninja-build libcurl4-openssl-dev
 
-      - name: Run repository preparation and formatting gates
+      - name: Run repository and formatting gates
+        shell: bash
         run: |
+          set -euxo pipefail
           make test_ci
           make -j4 format_tools
+          make format-fix
           make format-check-silent enum-integrity-check extension-patch-check -j2 -Otarget
+          git diff --check
           git diff --exit-code -- . \
             ':!src/common/hive_partitioning.cpp' \
             ':!test/common/CMakeLists.txt' \
@@ -211,30 +103,19 @@ jobs:
           "$CLI" -c "COPY (SELECT 11 AS id) TO '$ROOT/literal#segment/p=hash/data.parquet' (FORMAT PARQUET);"
           "$CLI" -c "COPY (SELECT 12 AS id) TO '$ROOT/C:/p=drive/data.parquet' (FORMAT PARQUET);"
 
-          actual=$("$CLI" -csv -noheader -c \
-            "SELECT p, id FROM parquet_scan('$ROOT/literal?segment/p=local/data.parquet', hive_partitioning=1);")
-          test "$actual" = 'local,10'
-          actual=$("$CLI" -csv -noheader -c \
-            "SELECT p, id FROM parquet_scan('$ROOT/literal#segment/p=hash/data.parquet', hive_partitioning=1);")
-          test "$actual" = 'hash,11'
-          actual=$(cd "$ROOT" && "$CLI" -csv -noheader -c \
-            "SELECT p, id FROM parquet_scan('C://p=drive/data.parquet', hive_partitioning=1);")
-          test "$actual" = 'drive,12'
+          test "$("$CLI" -csv -noheader -c "SELECT p, id FROM parquet_scan('$ROOT/literal?segment/p=local/data.parquet', hive_partitioning=1);")" = 'local,10'
+          test "$("$CLI" -csv -noheader -c "SELECT p, id FROM parquet_scan('$ROOT/literal#segment/p=hash/data.parquet', hive_partitioning=1);")" = 'hash,11'
+          test "$(cd "$ROOT" && "$CLI" -csv -noheader -c "SELECT p, id FROM parquet_scan('C://p=drive/data.parquet', hive_partitioning=1);")" = 'drive,12'
 
-          python3 -m http.server 8123 --bind 127.0.0.1 --directory "$ROOT" \
-            > /tmp/hive-uri-http.log 2>&1 &
+          python3 -m http.server 8123 --bind 127.0.0.1 --directory "$ROOT" > /tmp/hive-uri-http.log 2>&1 &
           server_pid=$!
           trap 'kill "$server_pid" || true' EXIT
           sleep 2
 
           for suffix in '?redirect=/p=fake/file' '#redirect=/p=fake/file'; do
-            actual=$("$CLI" -csv -noheader -c \
-              "LOAD httpfs; SELECT id FROM parquet_scan('http://127.0.0.1:8123/data.parquet${suffix}', hive_partitioning=1);")
-            test "$actual" = '7'
+            test "$("$CLI" -csv -noheader -c "LOAD httpfs; SELECT id FROM parquet_scan('http://127.0.0.1:8123/data.parquet${suffix}', hive_partitioning=1);")" = '7'
             set +e
-            "$CLI" -c \
-              "LOAD httpfs; SELECT p FROM parquet_scan('http://127.0.0.1:8123/data.parquet${suffix}', hive_partitioning=1);" \
-              > /tmp/no-phantom.log 2>&1
+            "$CLI" -c "LOAD httpfs; SELECT p FROM parquet_scan('http://127.0.0.1:8123/data.parquet${suffix}', hive_partitioning=1);" > /tmp/no-phantom.log 2>&1
             status=$?
             set -e
             cat /tmp/no-phantom.log
@@ -242,27 +123,17 @@ jobs:
             grep -F 'Referenced column "p" not found' /tmp/no-phantom.log
           done
 
-          actual=$("$CLI" -csv -noheader -c \
-            "LOAD httpfs; SELECT p, id FROM parquet_scan('http://127.0.0.1:8123/p=real/data.parquet?redirect=/q=fake/file', hive_partitioning=1);")
-          test "$actual" = 'real,8'
+          test "$("$CLI" -csv -noheader -c "LOAD httpfs; SELECT p, id FROM parquet_scan('http://127.0.0.1:8123/p=real/data.parquet?redirect=/q=fake/file', hive_partitioning=1);")" = 'real,8'
 
           set +e
-          "$CLI" -c \
-            "LOAD httpfs; SELECT q FROM parquet_scan('http://127.0.0.1:8123/p=real/data.parquet?redirect=/q=fake/file', hive_partitioning=1);" \
-            > /tmp/no-query-column.log 2>&1
+          "$CLI" -c "LOAD httpfs; SELECT q FROM parquet_scan('http://127.0.0.1:8123/p=real/data.parquet?redirect=/q=fake/file', hive_partitioning=1);" > /tmp/no-query-column.log 2>&1
           status=$?
           set -e
           cat /tmp/no-query-column.log
           test "$status" -ne 0
           grep -F 'Referenced column "q" not found' /tmp/no-query-column.log
 
-          actual=$("$CLI" -csv -noheader -c \
-            "LOAD httpfs; SELECT count(*) FROM parquet_scan([\
-              'http://127.0.0.1:8123/data.parquet?redirect=/q=fake/file',\
-              'http://127.0.0.1:8123/second.parquet?redirect=/r=fake/file'\
-            ], hive_partitioning=1);")
-          test "$actual" = '2'
-
+          test "$("$CLI" -csv -noheader -c "LOAD httpfs; SELECT count(*) FROM parquet_scan(['http://127.0.0.1:8123/data.parquet?redirect=/q=fake/file','http://127.0.0.1:8123/second.parquet?redirect=/r=fake/file'], hive_partitioning=1);")" = '2'
           cat /tmp/hive-uri-http.log
 
       - name: Commit tested source to clean branch
