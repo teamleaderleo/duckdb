@@ -1,4 +1,4 @@
-name: Fieldwork unit 04 owner review
+name: Fieldwork unit 04 current-main owner review
 
 on:
   push:
@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: fieldwork-unit04-owner-review-${{ github.event.pull_request.number || github.ref }}
@@ -22,56 +22,123 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     env:
-      BASE_SHA: 81fcce7fa76a320dc65be54cb0825e5315ac6f5b
-      SOURCE_SHA: 1c931ed41822f0e27d66afb636be2730695dcf8d
+      HISTORICAL_BASE: 81fcce7fa76a320dc65be54cb0825e5315ac6f5b
+      HISTORICAL_SOURCE: 1c931ed41822f0e27d66afb636be2730695dcf8d
+      CURRENT_MAIN: daa81697e31a3dc97a93f11220037cd2213af6cd
+      SOURCE_BRANCH: candidate/04-hive-default-marker-current-main
       GEN: ninja
     steps:
-      - name: Check out exact clean source head
+      - name: Check out exact current public main
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
-          ref: ${{ env.SOURCE_SHA }}
+          ref: ${{ env.CURRENT_MAIN }}
           fetch-depth: 0
+          persist-credentials: true
 
-      - name: Verify source generation and two-file fence
+      - name: Materialize exact accepted two-file patch
         shell: bash
         run: |
           set -euxo pipefail
-          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
-          test "$(git rev-parse HEAD^)" = "$BASE_SHA"
-          git diff --check "$BASE_SHA" "$SOURCE_SHA"
-          git diff --name-only "$BASE_SHA" "$SOURCE_SHA" | sort > /tmp/actual-files
+          test "$(git rev-parse HEAD)" = "$CURRENT_MAIN"
+          mkdir -p receipt
+          git diff --binary "$HISTORICAL_BASE" "$HISTORICAL_SOURCE" -- \
+            src/execution/operator/persistent/physical_copy_to_file.cpp \
+            test/sql/copy/parquet/parquet_hive_default_collision.test \
+            > receipt/historical-source.patch
+          test -s receipt/historical-source.patch
+          git apply --check --3way receipt/historical-source.patch
+          git apply --3way receipt/historical-source.patch
+          git diff --check
+          {
+            git diff --name-only
+            git ls-files --others --exclude-standard
+          } | sort -u > receipt/actual-files.txt
           printf '%s\n' \
             src/execution/operator/persistent/physical_copy_to_file.cpp \
             test/sql/copy/parquet/parquet_hive_default_collision.test \
-            | sort > /tmp/expected-files
-          diff -u /tmp/expected-files /tmp/actual-files
+            | sort > receipt/expected-files.txt
+          diff -u receipt/expected-files.txt receipt/actual-files.txt
+          git diff --binary > receipt/current-main-source.patch
+          {
+            echo "historical_base=$HISTORICAL_BASE"
+            echo "historical_source=$HISTORICAL_SOURCE"
+            echo "current_main=$CURRENT_MAIN"
+            echo "source_branch=$SOURCE_BRANCH"
+          } > receipt/identity.txt
 
       - name: Install build and generation dependencies
+        shell: bash
         run: |
+          set -euo pipefail
           sudo apt-get update -y -qq
           sudo apt-get install -y -qq ninja-build
-          make generate-files-deps
+          make generate-files-deps 2>&1 | tee receipt/generate-files-deps.log
 
       - name: Run repository prepare and generated-file gates
+        shell: bash
         run: |
-          make test_ci
-          make -j4 format_tools
-          make format-check-silent enum-integrity-check extension-patch-check -j2 -Otarget
-          make generate-files
+          set -euo pipefail
+          make test_ci 2>&1 | tee receipt/test-ci.log
+          make -j4 format_tools 2>&1 | tee receipt/format-tools.log
+          make format-check-silent enum-integrity-check extension-patch-check -j2 -Otarget \
+            2>&1 | tee receipt/source-gates.log
+          make generate-files 2>&1 | tee receipt/generate-files.log
           git diff --exit-code
 
       - name: Configure native debug build with Parquet
+        shell: bash
         run: |
+          set -euo pipefail
           cmake -S . -B build/unit04-owner-review -G Ninja \
             -DCMAKE_BUILD_TYPE=Debug \
             -DBUILD_EXTENSIONS=parquet \
-            -DFORCE_COLORED_OUTPUT=1
+            -DFORCE_COLORED_OUTPUT=1 \
+            2>&1 | tee receipt/configure.log
 
       - name: Build native test runner
-        run: cmake --build build/unit04-owner-review --target unittest --parallel 2
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake --build build/unit04-owner-review --target unittest --parallel 2 \
+            2>&1 | tee receipt/build.log
 
       - name: Run focused unit 04 regression
-        run: ./build/unit04-owner-review/test/run 'test/sql/copy/parquet/parquet_hive_default_collision.test'
+        shell: bash
+        run: |
+          set -o pipefail
+          ./build/unit04-owner-review/test/run \
+            'test/sql/copy/parquet/parquet_hive_default_collision.test' \
+            2>&1 | tee receipt/focused.log
 
       - name: Run complete native unit-test runner
-        run: ./build/unit04-owner-review/test/run
+        shell: bash
+        run: |
+          set -o pipefail
+          ./build/unit04-owner-review/test/run \
+            2>&1 | tee receipt/complete.log
+
+      - name: Publish exact current-main two-file source
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git diff --check
+          expected=$(cat receipt/expected-files.txt)
+          actual=$({ git diff --name-only; git ls-files --others --exclude-standard; } | sort -u | grep -v '^receipt/' || true)
+          test "$actual" = "$expected"
+          git config user.name fieldwork-bot
+          git config user.email fieldwork-bot@users.noreply.github.com
+          git checkout -B "$SOURCE_BRANCH"
+          git add \
+            src/execution/operator/persistent/physical_copy_to_file.cpp \
+            test/sql/copy/parquet/parquet_hive_default_collision.test
+          git commit -m 'fix(parquet): preserve literal Hive default-partition marker'
+          git push --force-with-lease origin "HEAD:refs/heads/$SOURCE_BRANCH"
+
+      - name: Upload exact receipt
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
+        with:
+          name: fieldwork-unit-04-current-main
+          path: receipt/
+          if-no-files-found: warn
+          retention-days: 30
