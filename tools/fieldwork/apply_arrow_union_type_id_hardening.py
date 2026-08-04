@@ -15,44 +15,20 @@ def replace_once(path: str, old: str, new: str) -> None:
 
 
 replace_once(
-    "src/function/table/arrow/arrow_duck_schema.cpp",
-    "parsed_length != type_id_string.size() || parsed_type_id < 0 || parsed_type_id > 127",
-    "parsed_length != type_id_string.size() || parsed_type_id < -128 || parsed_type_id > 127",
-)
-
-replace_once(
-    "src/function/table/arrow/arrow_type_info.cpp",
-    "type_id_to_child_idx(128, DConstants::INVALID_INDEX)",
-    "type_id_to_child_idx(256, DConstants::INVALID_INDEX)",
-)
-
-replace_once(
     "src/function/table/arrow/arrow_type_info.cpp",
     '''\t\tif (type_id < 0) {
 \t\t\tthrow InvalidInputException("Arrow union type ID out of range: %d", static_cast<int>(type_id));
 \t\t}
 \t\ttype_id_to_child_idx[NumericCast<idx_t>(type_id)] = child_idx;
 ''',
-    '''\t\tconst auto type_id_index = NumericCast<idx_t>(static_cast<uint8_t>(type_id));
-\t\tauto &mapped_child_idx = type_id_to_child_idx[type_id_index];
+    '''\t\tif (type_id < 0) {
+\t\t\tthrow InvalidInputException("Arrow union type ID out of range: %d", static_cast<int>(type_id));
+\t\t}
+\t\tauto &mapped_child_idx = type_id_to_child_idx[NumericCast<idx_t>(type_id)];
 \t\tif (mapped_child_idx != DConstants::INVALID_INDEX) {
 \t\t\tthrow InvalidInputException("Arrow union type ID %d is duplicated", static_cast<int>(type_id));
 \t\t}
 \t\tmapped_child_idx = child_idx;
-''',
-)
-
-replace_once(
-    "src/function/table/arrow/arrow_type_info.cpp",
-    '''idx_t ArrowUnionInfo::TypeIdToChildIndex(int8_t type_id) const {
-\tif (type_id < 0) {
-\t\tthrow InvalidInputException("Arrow union type ID out of range: %d", static_cast<int>(type_id));
-\t}
-\tauto child_idx = type_id_to_child_idx[NumericCast<idx_t>(type_id)];
-''',
-    '''idx_t ArrowUnionInfo::TypeIdToChildIndex(int8_t type_id) const {
-\tconst auto type_id_index = NumericCast<idx_t>(static_cast<uint8_t>(type_id));
-\tauto child_idx = type_id_to_child_idx[type_id_index];
 ''',
 )
 
@@ -126,5 +102,5 @@ replace_once(
 ''',
 )
 
-print("FIELDWORK_262_HARDENING=signed-type-id-duplicate-rejection")
+print("FIELDWORK_262_HARDENING=nonnegative-type-id-duplicate-rejection")
 print("FIELDWORK_262_REPAIR=union-child-parent-offset")
