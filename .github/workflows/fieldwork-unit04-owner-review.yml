@@ -46,10 +46,11 @@ jobs:
             | sort > /tmp/expected-files
           diff -u /tmp/expected-files /tmp/actual-files
 
-      - name: Install build dependencies
+      - name: Install build and generation dependencies
         run: |
           sudo apt-get update -y -qq
           sudo apt-get install -y -qq ninja-build
+          make generate-files-deps
 
       - name: Run repository prepare and generated-file gates
         run: |
