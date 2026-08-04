@@ -1,0 +1,143 @@
+name: Fieldwork unit 03 current-main materialize and test
+
+on:
+  pull_request:
+    branches:
+      - fieldwork/base-duckdb-63094a6-clean
+    paths:
+      - 'fieldwork/unit_03_window_rows_following_overflow.patch'
+      - 'fieldwork/unit_03_test_rows_following_overflow.test'
+      - '.github/workflows/fieldwork-unit-03-materialize.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fieldwork-unit-03-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CURRENT_MAIN: daa81697e31a3dc97a93f11220037cd2213af6cd
+  SOURCE_BRANCH: candidate/03-window-overflow-current-main
+
+jobs:
+  materialize-and-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Check out exact current public main
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ${{ env.CURRENT_MAIN }}
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Check out execution carrier
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          path: .fieldwork-carrier
+          persist-credentials: false
+
+      - name: Materialize candidate
+        shell: bash
+        run: |
+          set -euxo pipefail
+          test "$(git rev-parse HEAD)" = "$CURRENT_MAIN"
+          git apply --check .fieldwork-carrier/fieldwork/unit_03_window_rows_following_overflow.patch
+          git apply .fieldwork-carrier/fieldwork/unit_03_window_rows_following_overflow.patch
+          cp .fieldwork-carrier/fieldwork/unit_03_test_rows_following_overflow.test \
+            test/sql/window/test_rows_following_overflow.test
+          rm -rf .fieldwork-carrier
+          git diff --check
+          {
+            git diff --name-only
+            git ls-files --others --exclude-standard
+          } | sort -u | tee "${RUNNER_TEMP}/unit-03-changed-files.txt"
+          cat > "${RUNNER_TEMP}/unit-03-expected-files.txt" <<'EOF'
+          src/function/window/window_boundaries_state.cpp
+          test/sql/window/test_rows_following_overflow.test
+          EOF
+          diff -u "${RUNNER_TEMP}/unit-03-expected-files.txt" "${RUNNER_TEMP}/unit-03-changed-files.txt"
+          git diff > "${RUNNER_TEMP}/unit-03-candidate.patch"
+          find test/sql/window -type f -name '*.test_slow' -print | sort \
+            > "${RUNNER_TEMP}/unit-03-excluded-slow-tests.txt"
+          find test/sql/window -type f -name '*.test' -print | sort \
+            > "${RUNNER_TEMP}/unit-03-selected-window-tests.txt"
+          test -s "${RUNNER_TEMP}/unit-03-selected-window-tests.txt"
+          {
+            echo "carrier_head=${{ github.event.pull_request.head.sha || github.sha }}"
+            echo "current_main=$CURRENT_MAIN"
+            echo "source_branch=$SOURCE_BRANCH"
+          } > "${RUNNER_TEMP}/unit-03-identity.txt"
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -y -qq
+          sudo apt-get install -y -qq ninja-build
+
+      - name: Configure focused Debug build
+        run: |
+          cmake -S . -B build/fieldwork -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DBUILD_EXTENSIONS='' \
+            -DFORCE_COLORED_OUTPUT=1
+
+      - name: Build native test runner
+        run: cmake --build build/fieldwork --target unittest --parallel 4
+
+      - name: Run focused regression
+        shell: bash
+        run: |
+          set -o pipefail
+          ./build/fieldwork/test/run 'test/sql/window/test_rows_following_overflow.test' \
+            2>&1 | tee "${RUNNER_TEMP}/unit-03-focused.log"
+
+      - name: Run ordinary non-slow window suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t tests < "${RUNNER_TEMP}/unit-03-selected-window-tests.txt"
+          test "${#tests[@]}" -gt 1
+          ./build/fieldwork/test/run "${tests[@]}" \
+            2>&1 | tee "${RUNNER_TEMP}/unit-03-window-suite.log"
+
+      - name: Run formatting gate
+        shell: bash
+        run: |
+          set -o pipefail
+          make format-check 2>&1 | tee "${RUNNER_TEMP}/unit-03-format.log"
+
+      - name: Upload unit 03 receipts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: unit-03-window-overflow-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/unit-03-candidate.patch
+            ${{ runner.temp }}/unit-03-changed-files.txt
+            ${{ runner.temp }}/unit-03-expected-files.txt
+            ${{ runner.temp }}/unit-03-excluded-slow-tests.txt
+            ${{ runner.temp }}/unit-03-selected-window-tests.txt
+            ${{ runner.temp }}/unit-03-identity.txt
+            ${{ runner.temp }}/unit-03-focused.log
+            ${{ runner.temp }}/unit-03-window-suite.log
+            ${{ runner.temp }}/unit-03-format.log
+            test/sql/window/test_rows_following_overflow.test
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Publish exact current-main two-file source
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git status --short
+          test "$(git status --short | wc -l)" = "2"
+          git config user.name fieldwork-bot
+          git config user.email fieldwork-bot@users.noreply.github.com
+          git checkout -B "$SOURCE_BRANCH"
+          git add src/function/window/window_boundaries_state.cpp \
+            test/sql/window/test_rows_following_overflow.test
+          git commit -m 'fix(window): saturate ROWS FOLLOWING overflow at partition end'
+          git push --force-with-lease origin "HEAD:refs/heads/$SOURCE_BRANCH"
