@@ -118,6 +118,7 @@ jobs:
           build/debug/test/unittest "Arrow sparse union maps reordered in-range type IDs"
           build/debug/test/unittest "Arrow sparse union maps upper-bound type IDs"
           build/debug/test/unittest "Arrow sparse union mapping honors a nonzero parent offset"
+          build/debug/test/unittest "Arrow sparse union mapping honors its offset when nested in a fixed-size list"
 
       - name: Run malformed schema and runtime controls
         run: |
