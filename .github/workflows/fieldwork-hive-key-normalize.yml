@@ -1,0 +1,324 @@
+name: Fieldwork Hive key normalization
+
+on:
+  push:
+    branches:
+      - fieldwork/hive-key-normalize-carrier-daa8169
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fieldwork-hive-key-normalize-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      BASE_SHA: daa81697e31a3dc97a93f11220037cd2213af6cd
+      SOURCE_BRANCH: fieldwork/hive-key-normalize-daa8169
+      GEN: ninja
+    steps:
+      - name: Check out clean current-main source branch
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: fieldwork/hive-key-normalize-daa8169
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Verify source branch base
+        shell: bash
+        run: |
+          set -euxo pipefail
+          test "$(git merge-base HEAD "$BASE_SHA")" = "$BASE_SHA"
+
+      - name: Materialize normalization source and tests
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          hive_path = Path('src/common/hive_partitioning.cpp')
+          hive = hive_path.read_text()
+          if 'static string UnescapeHivePartitionKey' not in hive:
+              include_marker = '#include "duckdb/common/vector/flat_vector.hpp"\n'
+              if include_marker not in hive:
+                  raise RuntimeError('Hive include insertion point changed')
+              hive = hive.replace(include_marker, include_marker + '\n#include <algorithm>\n', 1)
+
+              namespace_marker = 'namespace duckdb {\n\n'
+              helper = '''template <class MAP>
+          static auto FindHivePartition(MAP &partitions, const string &key) {
+          \treturn std::find_if(partitions.begin(), partitions.end(),
+          \t                    [&](const auto &entry) { return StringUtil::CIEquals(entry.first, key); });
+          }
+
+          static string UnescapeHivePartitionKey(const string &key) {
+          \ttry {
+          \t\treturn HivePartitioning::Unescape(key);
+          \t} catch (const InvalidInputException &) {
+          \t\t// Keep accepting externally authored keys whose decoded bytes are not valid UTF-8.
+          \t\treturn key;
+          \t}
+          }
+
+          '''
+              if namespace_marker not in hive:
+                  raise RuntimeError('Hive namespace insertion point changed')
+              hive = hive.replace(namespace_marker, namespace_marker + helper, 1)
+
+              lookup_old = 'auto lookup_column_id = column_map.find(partition.first);'
+              lookup_new = 'auto lookup_column_id = FindHivePartition(column_map, partition.first);'
+              if lookup_old not in hive:
+                  raise RuntimeError('Filter lookup insertion point changed')
+              hive = hive.replace(lookup_old, lookup_new, 1)
+
+              parse_old = '''\t\t\t\tstring key = filename.substr(partition_start, equality_sign - partition_start);
+          \t\t\t\tstring value = filename.substr(equality_sign + 1, c - equality_sign - 1);
+          \t\t\t\tresult.insert(make_pair(std::move(key), std::move(value)));
+          '''
+              parse_new = '''\t\t\t\tstring key = UnescapeHivePartitionKey(
+          \t\t\t\t    filename.substr(partition_start, equality_sign - partition_start));
+          \t\t\t\tstring value = filename.substr(equality_sign + 1, c - equality_sign - 1);
+          \t\t\t\tauto existing = FindHivePartition(result, key);
+          \t\t\t\tif (existing != result.end()) {
+          \t\t\t\t\tresult.erase(existing);
+          \t\t\t\t}
+          \t\t\t\tresult.insert(make_pair(std::move(key), std::move(value)));
+          '''
+              if parse_old not in hive:
+                  raise RuntimeError('Hive parse insertion point changed')
+              hive = hive.replace(parse_old, parse_new, 1)
+              hive_path.write_text(hive)
+
+          reader_path = Path('src/common/multi_file/multi_file_reader.cpp')
+          reader = reader_path.read_text()
+          if 'FindHivePartitionInsensitive' not in reader:
+              marker = 'constexpr int32_t MultiFileReader::LAST_UPDATED_SEQUENCE_NUMBER_ID;\n\n'
+              helper = '''template <class MAP>
+          static auto FindHivePartitionInsensitive(MAP &partitions, const string &key) {
+          \treturn std::find_if(partitions.begin(), partitions.end(),
+          \t                    [&](const auto &entry) { return StringUtil::CIEquals(entry.first, key); });
+          }
+
+          '''
+              if marker not in reader:
+                  raise RuntimeError('Multi-file helper insertion point changed')
+              reader = reader.replace(marker, marker + helper, 1)
+
+              replacements = {
+                  'file_partitions.find(part_info.first)':
+                      'FindHivePartitionInsensitive(file_partitions, part_info.first)',
+                  'hive_partitions.find(hp->value)':
+                      'FindHivePartitionInsensitive(hive_partitions, hp->value)',
+                  'partitions.find(part.first)':
+                      'FindHivePartitionInsensitive(partitions, part.first)',
+                  'partitions.find(hive_type.first)':
+                      'FindHivePartitionInsensitive(partitions, hive_type.first)',
+                  'unordered_map<string, LogicalType> detected_types;':
+                      'case_insensitive_map_t<LogicalType> detected_types;',
+              }
+              for old, new in replacements.items():
+                  if old not in reader:
+                      raise RuntimeError(f'Multi-file replacement point changed: {old}')
+                  reader = reader.replace(old, new, 1)
+              reader_path.write_text(reader)
+
+          cmake_path = Path('test/common/CMakeLists.txt')
+          cmake = cmake_path.read_text()
+          if 'test_hive_partition_key_normalization.cpp' not in cmake:
+              marker = '  test_external_file_cache.cpp\n'
+              if marker not in cmake:
+                  raise RuntimeError('CMake insertion point changed')
+              cmake = cmake.replace(marker, marker + '  test_hive_partition_key_normalization.cpp\n', 1)
+              cmake_path.write_text(cmake)
+
+          Path('test/common/test_hive_partition_key_normalization.cpp').write_text('''#include "duckdb/common/hive_partitioning.hpp"
+          #include "catch.hpp"
+
+          using namespace duckdb;
+
+          TEST_CASE("Hive partition keys decode and use deepest logical value", "[hive_key_normalization]") {
+          \tauto writer_key = string("=/ \\\\/");
+          \tauto writer = HivePartitioning::Parse("/" + HivePartitioning::Escape(writer_key) + "=value/file.parquet");
+          \tREQUIRE(writer.size() == 1);
+          \tREQUIRE(writer.at(writer_key) == "value");
+
+          \tauto exact = HivePartitioning::Parse("/a=outer/a=inner/file.parquet");
+          \tREQUIRE(exact.size() == 1);
+          \tREQUIRE(exact.at("a") == "inner");
+
+          \tauto upper_deep = HivePartitioning::Parse("/a=outer/A=inner/file.parquet");
+          \tREQUIRE(upper_deep.size() == 1);
+          \tREQUIRE(upper_deep.begin()->first == "A");
+          \tREQUIRE(upper_deep.begin()->second == "inner");
+
+          \tauto lower_deep = HivePartitioning::Parse("/A=outer/a=inner/file.parquet");
+          \tREQUIRE(lower_deep.size() == 1);
+          \tREQUIRE(lower_deep.begin()->first == "a");
+          \tREQUIRE(lower_deep.begin()->second == "inner");
+
+          \tauto percent_deep = HivePartitioning::Parse("/a=outer/%41=inner/file.parquet");
+          \tREQUIRE(percent_deep.size() == 1);
+          \tREQUIRE(percent_deep.begin()->first == "A");
+          \tREQUIRE(percent_deep.begin()->second == "inner");
+          }
+
+          TEST_CASE("Hive partition key decoding preserves malformed external spellings", "[hive_key_normalization]") {
+          \tauto malformed = HivePartitioning::Parse("/%ZZ=value/file.parquet");
+          \tREQUIRE(malformed.size() == 1);
+          \tREQUIRE(malformed.at("%ZZ") == "value");
+
+          \tauto invalid_utf8 = HivePartitioning::Parse("/%FF=value/file.parquet");
+          \tREQUIRE(invalid_utf8.size() == 1);
+          \tREQUIRE(invalid_utf8.at("%FF") == "value");
+
+          \tauto distinct = HivePartitioning::Parse("/a=one/b=two/file.parquet");
+          \tREQUIRE(distinct.size() == 2);
+          \tREQUIRE(distinct.at("a") == "one");
+          \tREQUIRE(distinct.at("b") == "two");
+          }
+          ''')
+
+          escape_path = Path('test/sql/copy/partitioned/hive_partition_escape.test')
+          escape = escape_path.read_text()
+          old = '''statement error
+          select "=/ \\\\/", COUNT(*)
+          from parquet_scan('{TEST_DIR}/escaped_partitions_names/**/*.parquet')
+          GROUP BY ALL
+          ORDER BY ALL
+          ----
+          Binder Error: Referenced column "=/ \\\\/" not found in FROM clause!
+          '''
+          new = '''query II
+          select "=/ \\\\/", COUNT(*)
+          from parquet_scan('{TEST_DIR}/escaped_partitions_names/**/*.parquet')
+          GROUP BY ALL
+          ORDER BY ALL
+          ----
+          /	1
+          ===	3
+          ?:&	1
+          \\/\\/	1
+          value with strings	1
+          🦆	1
+
+          query I
+          select id from parquet_scan('{TEST_DIR}/escaped_partitions_names/**/*.parquet') where "=/ \\\\/" = '?:&'
+          ----
+          5
+          '''
+          if old not in escape:
+              raise RuntimeError('Existing escape regression changed')
+          escape_path.write_text(escape.replace(old, new, 1))
+          PY
+
+          git diff --check
+          diff_files=$({
+            git diff --name-only "$BASE_SHA"
+            git ls-files --others --exclude-standard
+          } | sort -u)
+          expected_files=$(printf '%s\n' \
+            src/common/hive_partitioning.cpp \
+            src/common/multi_file/multi_file_reader.cpp \
+            test/common/CMakeLists.txt \
+            test/common/test_hive_partition_key_normalization.cpp \
+            test/sql/copy/partitioned/hive_partition_escape.test | sort)
+          test "$diff_files" = "$expected_files"
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -y -qq
+          sudo apt-get install -y -qq ninja-build
+
+      - name: Run repository preparation and formatting gates
+        run: |
+          make test_ci
+          make -j4 format_tools
+          make format-check-silent enum-integrity-check extension-patch-check -j2 -Otarget
+          git diff --exit-code -- . \
+            ':!src/common/hive_partitioning.cpp' \
+            ':!src/common/multi_file/multi_file_reader.cpp' \
+            ':!test/common/CMakeLists.txt' \
+            ':!test/common/test_hive_partition_key_normalization.cpp' \
+            ':!test/sql/copy/partitioned/hive_partition_escape.test'
+
+      - name: Configure DuckDB with Parquet
+        run: |
+          cmake -S . -B build/hive-key-normalize -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DBUILD_EXTENSIONS=parquet \
+            -DFORCE_COLORED_OUTPUT=1
+
+      - name: Build CLI and native test runner
+        run: cmake --build build/hive-key-normalize --target duckdb unittest --parallel 2
+
+      - name: Run native parser and writer regressions
+        run: |
+          ./build/hive-key-normalize/test/unittest '[hive_key_normalization]'
+          ./build/hive-key-normalize/test/unittest test/sql/copy/partitioned/hive_partition_escape.test
+
+      - name: Verify aliases, multi-file binding, types, and filters
+        shell: bash
+        run: |
+          set -euxo pipefail
+          CLI="$(pwd)/build/hive-key-normalize/duckdb"
+          ROOT=/tmp/duckdb-hive-key-normalize
+          rm -rf "$ROOT"
+          mkdir -p \
+            "$ROOT/exact/a=outer/a=inner" \
+            "$ROOT/case-upper/a=outer/A=inner" \
+            "$ROOT/case-lower/A=outer/a=inner" \
+            "$ROOT/percent/a=outer/%41=inner" \
+            "$ROOT/malformed/%ZZ=value" \
+            "$ROOT/invalid/%FF=value" \
+            "$ROOT/multi/a=one" \
+            "$ROOT/multi/A=two" \
+            "$ROOT/types/A=42"
+
+          "$CLI" -c "COPY (SELECT 1 AS id) TO '$ROOT/exact/a=outer/a=inner/data.parquet' (FORMAT PARQUET);"
+          "$CLI" -c "COPY (SELECT 2 AS id) TO '$ROOT/case-upper/a=outer/A=inner/data.parquet' (FORMAT PARQUET);"
+          "$CLI" -c "COPY (SELECT 3 AS id) TO '$ROOT/case-lower/A=outer/a=inner/data.parquet' (FORMAT PARQUET);"
+          "$CLI" -c "COPY (SELECT 4 AS id) TO '$ROOT/percent/a=outer/%41=inner/data.parquet' (FORMAT PARQUET);"
+          "$CLI" -c "COPY (SELECT 5 AS id) TO '$ROOT/malformed/%ZZ=value/data.parquet' (FORMAT PARQUET);"
+          "$CLI" -c "COPY (SELECT 6 AS id) TO '$ROOT/invalid/%FF=value/data.parquet' (FORMAT PARQUET);"
+          "$CLI" -c "COPY (SELECT 7 AS id) TO '$ROOT/multi/a=one/data.parquet' (FORMAT PARQUET);"
+          "$CLI" -c "COPY (SELECT 8 AS id) TO '$ROOT/multi/A=two/data.parquet' (FORMAT PARQUET);"
+          "$CLI" -c "COPY (SELECT 9 AS id) TO '$ROOT/types/A=42/data.parquet' (FORMAT PARQUET);"
+
+          test "$("$CLI" -csv -noheader -c "SELECT a, id FROM parquet_scan('$ROOT/exact/**/*.parquet', hive_partitioning=1);")" = 'inner,1'
+          test "$("$CLI" -csv -noheader -c "SELECT a, id FROM parquet_scan('$ROOT/case-upper/**/*.parquet', hive_partitioning=1);")" = 'inner,2'
+          test "$("$CLI" -csv -noheader -c "SELECT a, id FROM parquet_scan('$ROOT/case-lower/**/*.parquet', hive_partitioning=1);")" = 'inner,3'
+          test "$("$CLI" -csv -noheader -c "SELECT a, id FROM parquet_scan('$ROOT/percent/**/*.parquet', hive_partitioning=1);")" = 'inner,4'
+          test "$("$CLI" -csv -noheader -c "SELECT \"%ZZ\", id FROM parquet_scan('$ROOT/malformed/**/*.parquet', hive_partitioning=1);")" = 'value,5'
+          test "$("$CLI" -csv -noheader -c "SELECT \"%FF\", id FROM parquet_scan('$ROOT/invalid/**/*.parquet', hive_partitioning=1);")" = 'value,6'
+
+          actual=$("$CLI" -csv -noheader -c \
+            "SELECT a, id FROM parquet_scan('$ROOT/multi/**/*.parquet', hive_partitioning=1) ORDER BY id;")
+          test "$actual" = $'one,7\ntwo,8'
+          test "$("$CLI" -csv -noheader -c \
+            "SELECT count(*) FROM parquet_scan('$ROOT/multi/**/*.parquet', hive_partitioning=1) WHERE a='two';")" = '1'
+          test "$("$CLI" -csv -noheader -c \
+            "SELECT typeof(a), a FROM parquet_scan('$ROOT/types/**/*.parquet', hive_partitioning=1, hive_types={'a':'BIGINT'});")" = 'BIGINT,42'
+
+      - name: Commit tested source to clean branch
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git add \
+            src/common/hive_partitioning.cpp \
+            src/common/multi_file/multi_file_reader.cpp \
+            test/common/CMakeLists.txt \
+            test/common/test_hive_partition_key_normalization.cpp \
+            test/sql/copy/partitioned/hive_partition_escape.test
+          if ! git diff --cached --quiet; then
+            git config user.name 'Fieldwork Automation'
+            git config user.email 'actions@users.noreply.github.com'
+            git commit -m 'Normalize Hive partition key aliases'
+            git push origin "HEAD:refs/heads/$SOURCE_BRANCH"
+          fi
+          git log -1 --format='%H %s'
