@@ -51,18 +51,28 @@ jobs:
           git diff --check
           {
             git diff --name-only
-            git ls-files --others --exclude-standard
+            git ls-files --others --exclude-standard | grep -v '^receipt/' || true
           } | sort -u > receipt/actual-files.txt
           printf '%s\n' \
             src/execution/operator/persistent/physical_copy_to_file.cpp \
             test/sql/copy/parquet/parquet_hive_default_collision.test \
             | sort > receipt/expected-files.txt
           diff -u receipt/expected-files.txt receipt/actual-files.txt
-          git diff --binary > receipt/current-main-source.patch
+          git diff --binary -- \
+            src/execution/operator/persistent/physical_copy_to_file.cpp \
+            test/sql/copy/parquet/parquet_hive_default_collision.test \
+            > receipt/current-main-source.patch
+          git config user.name fieldwork-bot
+          git config user.email fieldwork-bot@users.noreply.github.com
+          git add \
+            src/execution/operator/persistent/physical_copy_to_file.cpp \
+            test/sql/copy/parquet/parquet_hive_default_collision.test
+          git commit -m 'fix(parquet): preserve literal Hive default-partition marker'
           {
             echo "historical_base=$HISTORICAL_BASE"
             echo "historical_source=$HISTORICAL_SOURCE"
             echo "current_main=$CURRENT_MAIN"
+            echo "tested_source=$(git rev-parse HEAD)"
             echo "source_branch=$SOURCE_BRANCH"
           } > receipt/identity.txt
 
@@ -121,17 +131,11 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          git diff --check
+          git diff --exit-code
           expected=$(cat receipt/expected-files.txt)
-          actual=$({ git diff --name-only; git ls-files --others --exclude-standard; } | sort -u | grep -v '^receipt/' || true)
+          actual=$(git diff --name-only "$CURRENT_MAIN..HEAD" | sort)
           test "$actual" = "$expected"
-          git config user.name fieldwork-bot
-          git config user.email fieldwork-bot@users.noreply.github.com
           git checkout -B "$SOURCE_BRANCH"
-          git add \
-            src/execution/operator/persistent/physical_copy_to_file.cpp \
-            test/sql/copy/parquet/parquet_hive_default_collision.test
-          git commit -m 'fix(parquet): preserve literal Hive default-partition marker'
           git push --force-with-lease origin "HEAD:refs/heads/$SOURCE_BRANCH"
 
       - name: Upload exact receipt
