@@ -78,7 +78,7 @@ jobs:
           cp --parents $(cat "$SOURCE_FILES") "$SOURCE_BUNDLE"
           grep -F 'FIELDWORK_262_PATCH=arrow-union-type-id-mapping' "$COUNTS"
           grep -F 'FIELDWORK_262_HARDENING=nonnegative-type-id-duplicate-rejection' "$COUNTS"
-          grep -F 'FIELDWORK_262_REPAIR=union-child-offset-propagation' "$COUNTS"
+          grep -F 'FIELDWORK_262_REPAIR=union-child-offset-and-count-validation' "$COUNTS"
 
       - name: Verify Arrow union type-code model
         run: |
@@ -125,6 +125,7 @@ jobs:
           build/debug/test/unittest "Arrow sparse union rejects duplicate schema type IDs"
           build/debug/test/unittest "Arrow sparse union rejects a negative schema type ID"
           build/debug/test/unittest "Arrow sparse union rejects a schema type-ID count mismatch"
+          build/debug/test/unittest "Arrow sparse union rejects an array child-count mismatch"
           build/debug/test/unittest "Arrow sparse union rejects an unmapped runtime type ID"
           build/debug/test/unittest "Arrow sparse union rejects a negative runtime type ID"
 
