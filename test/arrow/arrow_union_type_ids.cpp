@@ -151,8 +151,8 @@ TEST_CASE("Arrow sparse union maps reordered in-range type IDs", "[arrow][fieldw
 	RequireMappedValues(values);
 }
 
-TEST_CASE("Arrow sparse union maps signed type IDs", "[arrow][fieldwork]") {
-	auto values = ScanSparseIntUnion("+us:-128,0,127", {-128, 0, 127});
+TEST_CASE("Arrow sparse union maps upper-bound type IDs", "[arrow][fieldwork]") {
+	auto values = ScanSparseIntUnion("+us:0,64,127", {0, 64, 127});
 	RequireMappedValues(values);
 }
 
@@ -165,9 +165,8 @@ TEST_CASE("Arrow sparse union rejects duplicate schema type IDs", "[arrow][field
 	ScanSparseIntUnion("+us:5,5,9", {5, 5, 9}, 0, "Arrow union type ID 5 is duplicated");
 }
 
-TEST_CASE("Arrow sparse union rejects duplicate negative schema type IDs", "[arrow][fieldwork]") {
-	ScanSparseIntUnion("+us:-128,-128,127", {-128, -128, 127}, 0,
-	                   "Arrow union type ID -128 is duplicated");
+TEST_CASE("Arrow sparse union rejects a negative schema type ID", "[arrow][fieldwork]") {
+	ScanSparseIntUnion("+us:-1,0,127", {-1, 0, 127}, 0, "Arrow union type ID out of range: -1");
 }
 
 TEST_CASE("Arrow sparse union rejects a schema type-ID count mismatch", "[arrow][fieldwork]") {
@@ -178,7 +177,6 @@ TEST_CASE("Arrow sparse union rejects an unmapped runtime type ID", "[arrow][fie
 	ScanSparseIntUnion("+us:5,7,9", {5, 8, 9}, 0, "Arrow union type ID 8 does not map to a child");
 }
 
-TEST_CASE("Arrow sparse union rejects an unmapped negative runtime type ID", "[arrow][fieldwork]") {
-	ScanSparseIntUnion("+us:-128,0,127", {-128, -1, 127}, 0,
-	                   "Arrow union type ID -1 does not map to a child");
+TEST_CASE("Arrow sparse union rejects a negative runtime type ID", "[arrow][fieldwork]") {
+	ScanSparseIntUnion("+us:0,64,127", {0, -1, 127}, 0, "Arrow union type ID out of range: -1");
 }
