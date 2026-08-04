@@ -1,4 +1,4 @@
-name: Fieldwork Arrow union type-ID hardening
+name: Fieldwork Arrow union nested-offset characterization
 
 on:
   pull_request:
@@ -10,14 +10,14 @@ on:
       - 'test/arrow/arrow_union_type_ids.cpp'
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
-  group: fieldwork-arrow-union-hardening-${{ github.event.pull_request.number }}
+  group: fieldwork-arrow-union-nested-offset-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
-  candidate:
+  characterize:
     runs-on: ubuntu-24.04
     timeout-minutes: 50
     steps:
@@ -26,8 +26,9 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
+          persist-credentials: false
 
-      - name: Verify exact child carrier identity
+      - name: Verify exact characterization identity
         env:
           EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
           EXPECTED_PARENT_SHA: c962ece64c1356015aef15a37c0cc636f63b376b
@@ -50,9 +51,9 @@ jobs:
           test -z "$(git status --porcelain)"
           printf 'tested_sha=%s\n' "$EXPECTED_SHA"
 
-      - name: Generate exact hardened source candidate
+      - name: Generate pre-repair source candidate
         env:
-          PATCH: ${{ runner.temp }}/arrow-union-type-id-hardened.patch
+          PATCH: ${{ runner.temp }}/arrow-union-type-id-pre-nested-offset.patch
           SOURCE_FILES: ${{ runner.temp }}/source-files.txt
           SOURCE_BUNDLE: ${{ runner.temp }}/generated-source
           COUNTS: ${{ runner.temp }}/candidate-generation.txt
@@ -80,109 +81,32 @@ jobs:
           grep -F 'FIELDWORK_262_HARDENING=nonnegative-type-id-duplicate-rejection' "$COUNTS"
           grep -F 'FIELDWORK_262_REPAIR=union-child-parent-offset' "$COUNTS"
 
-      - name: Verify Arrow union type-code model
-        run: |
-          python - <<'PY'
-          invalid = None
-          mapping = [invalid] * 128
-          schema_ids = [0, 64, 127]
-          for child_idx, type_id in enumerate(schema_ids):
-              assert 0 <= type_id < len(mapping)
-              assert mapping[type_id] is invalid
-              mapping[type_id] = child_idx
-          assert [mapping[type_id] for type_id in schema_ids] == [0, 1, 2]
-          assert not (0 <= -1 < len(mapping))
-          duplicate = False
-          try:
-              type_id = 64
-              if mapping[type_id] is not invalid:
-                  raise ValueError('duplicate')
-          except ValueError:
-              duplicate = True
-          assert duplicate
-          print('Arrow union type-code model: passed')
-          PY
-
       - name: Install build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y mold ninja-build
 
-      - name: Build debug test runner with candidate
+      - name: Build debug test runner with pre-repair candidate
         run: GEN=ninja make debug
 
-      - name: Run positive mapping controls
+      - name: Run established positive controls
         run: |
           build/debug/test/unittest "Arrow sparse union maps identity type IDs"
           build/debug/test/unittest "Arrow sparse union maps non-sequential type IDs"
           build/debug/test/unittest "Arrow sparse union maps reordered in-range type IDs"
           build/debug/test/unittest "Arrow sparse union maps upper-bound type IDs"
           build/debug/test/unittest "Arrow sparse union mapping honors a nonzero parent offset"
-          build/debug/test/unittest "Arrow sparse union mapping honors its offset when nested in a fixed-size list"
 
-      - name: Run malformed schema and runtime controls
-        run: |
-          build/debug/test/unittest "Arrow sparse union rejects duplicate schema type IDs"
-          build/debug/test/unittest "Arrow sparse union rejects a negative schema type ID"
-          build/debug/test/unittest "Arrow sparse union rejects a schema type-ID count mismatch"
-          build/debug/test/unittest "Arrow sparse union rejects an unmapped runtime type ID"
-          build/debug/test/unittest "Arrow sparse union rejects a negative runtime type ID"
+      - name: Characterize nested sparse-union offset
+        run: build/debug/test/unittest "Arrow sparse union mapping honors its offset when nested in a fixed-size list"
 
-      - name: Publish exact clean source candidate
-        env:
-          PATCH: ${{ runner.temp }}/arrow-union-type-id-hardened.patch
-          TARGET_BASE: 2c9e51aa33dd07e928edae66304430aeb038edd7
-          SOURCE_BRANCH: fix/arrow-union-type-id-mapping
-          TEST_CMAKE: ${{ runner.temp }}/arrow-test-CMakeLists.txt
-          TEST_SOURCE: ${{ runner.temp }}/arrow_union_type_ids.cpp
-        run: |
-          set -euo pipefail
-          git show HEAD:test/arrow/CMakeLists.txt > "$TEST_CMAKE"
-          git show HEAD:test/arrow/arrow_union_type_ids.cpp > "$TEST_SOURCE"
-          git fetch origin "$SOURCE_BRANCH"
-          test "$(git rev-parse FETCH_HEAD)" = "$TARGET_BASE"
-          git reset --hard "$TARGET_BASE"
-          git clean -fdx
-          git apply --check "$PATCH"
-          git apply "$PATCH"
-          cp "$TEST_CMAKE" test/arrow/CMakeLists.txt
-          cp "$TEST_SOURCE" test/arrow/arrow_union_type_ids.cpp
-          git add \
-            src/common/enum_util.cpp \
-            src/function/table/arrow.cpp \
-            src/function/table/arrow/arrow_duck_schema.cpp \
-            src/function/table/arrow/arrow_type_info.cpp \
-            src/function/table/arrow_conversion.cpp \
-            src/include/duckdb/function/table/arrow/arrow_type_info.hpp \
-            src/include/duckdb/function/table/arrow/enum/arrow_type_info_type.hpp \
-            test/arrow/CMakeLists.txt \
-            test/arrow/arrow_union_type_ids.cpp
-          cat > "${{ runner.temp }}/expected-published-files.txt" <<'EOF'
-          src/common/enum_util.cpp
-          src/function/table/arrow.cpp
-          src/function/table/arrow/arrow_duck_schema.cpp
-          src/function/table/arrow/arrow_type_info.cpp
-          src/function/table/arrow_conversion.cpp
-          src/include/duckdb/function/table/arrow/arrow_type_info.hpp
-          src/include/duckdb/function/table/arrow/enum/arrow_type_info_type.hpp
-          test/arrow/CMakeLists.txt
-          test/arrow/arrow_union_type_ids.cpp
-          EOF
-          git diff --cached --name-only | sort > "${{ runner.temp }}/published-files.txt"
-          diff -u "${{ runner.temp }}/expected-published-files.txt" "${{ runner.temp }}/published-files.txt"
-          git diff --cached --check
-          git config user.name fieldwork-repair-bot
-          git config user.email fieldwork-repair-bot@users.noreply.github.com
-          git commit -m "fix(arrow): map sparse union type IDs"
-          git push origin HEAD:"$SOURCE_BRANCH"
-
-      - name: Retain exact hardened patch and receipts
+      - name: Retain exact characterization patch and receipts
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: arrow-union-type-id-hardening-${{ github.run_id }}-${{ github.run_attempt }}
+          name: arrow-union-nested-offset-characterization-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            ${{ runner.temp }}/arrow-union-type-id-hardened.patch
+            ${{ runner.temp }}/arrow-union-type-id-pre-nested-offset.patch
             ${{ runner.temp }}/candidate-generation.txt
             ${{ runner.temp }}/carrier-files.txt
             ${{ runner.temp }}/source-files.txt
