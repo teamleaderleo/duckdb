@@ -1,4 +1,4 @@
-name: Fieldwork unit 03 materialize and test
+name: Fieldwork unit 03 current-main materialize and test
 
 on:
   pull_request:
@@ -17,15 +17,19 @@ concurrency:
   group: fieldwork-unit-03-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+env:
+  CURRENT_MAIN: daa81697e31a3dc97a93f11220037cd2213af6cd
+  SOURCE_BRANCH: candidate/03-window-overflow-current-main
+
 jobs:
   materialize-and-test:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
-      - name: Check out clean source branch
+      - name: Check out exact current public main
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
-          ref: fix/window-rows-following-overflow
+          ref: ${{ env.CURRENT_MAIN }}
           fetch-depth: 0
           persist-credentials: true
 
@@ -40,7 +44,7 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          test "$(git rev-parse HEAD)" = "63094a6f725af5045113dda74e291c7d604f6a88"
+          test "$(git rev-parse HEAD)" = "$CURRENT_MAIN"
           git apply --check .fieldwork-carrier/fieldwork/unit_03_window_rows_following_overflow.patch
           git apply .fieldwork-carrier/fieldwork/unit_03_window_rows_following_overflow.patch
           cp .fieldwork-carrier/fieldwork/unit_03_test_rows_following_overflow.test \
@@ -62,6 +66,11 @@ jobs:
           find test/sql/window -type f -name '*.test' -print | sort \
             > "${RUNNER_TEMP}/unit-03-selected-window-tests.txt"
           test -s "${RUNNER_TEMP}/unit-03-selected-window-tests.txt"
+          {
+            echo "carrier_head=${{ github.event.pull_request.head.sha || github.sha }}"
+            echo "current_main=$CURRENT_MAIN"
+            echo "source_branch=$SOURCE_BRANCH"
+          } > "${RUNNER_TEMP}/unit-03-identity.txt"
 
       - name: Install build dependencies
         run: |
@@ -111,6 +120,7 @@ jobs:
             ${{ runner.temp }}/unit-03-expected-files.txt
             ${{ runner.temp }}/unit-03-excluded-slow-tests.txt
             ${{ runner.temp }}/unit-03-selected-window-tests.txt
+            ${{ runner.temp }}/unit-03-identity.txt
             ${{ runner.temp }}/unit-03-focused.log
             ${{ runner.temp }}/unit-03-window-suite.log
             ${{ runner.temp }}/unit-03-format.log
@@ -118,7 +128,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-      - name: Publish clean two-file source head
+      - name: Publish exact current-main two-file source
         shell: bash
         run: |
           set -euxo pipefail
@@ -126,7 +136,8 @@ jobs:
           test "$(git status --short | wc -l)" = "2"
           git config user.name fieldwork-bot
           git config user.email fieldwork-bot@users.noreply.github.com
+          git checkout -B "$SOURCE_BRANCH"
           git add src/function/window/window_boundaries_state.cpp \
             test/sql/window/test_rows_following_overflow.test
           git commit -m 'fix(window): saturate ROWS FOLLOWING overflow at partition end'
-          git push origin HEAD:fix/window-rows-following-overflow
+          git push --force-with-lease origin "HEAD:refs/heads/$SOURCE_BRANCH"
