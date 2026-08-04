@@ -1,0 +1,55 @@
+diff --git a/src/common/hive_partitioning.cpp b/src/common/hive_partitioning.cpp
+index 76ffe210ef61..2e30d99683ad 100644
+--- a/src/common/hive_partitioning.cpp
++++ b/src/common/hive_partitioning.cpp
+@@ -92,6 +92,27 @@ bool HivePartitioning::IsNull(const string &input) {
+ 	return StringUtil::CIEquals(input, "NULL") || input == "__HIVE_DEFAULT_PARTITION__";
+ }
+ 
++static bool HasURIScheme(const string &filename) {
++	auto scheme_end = filename.find("://");
++	if (scheme_end == string::npos || scheme_end <= 1) {
++		// A one-character prefix can be a Windows drive letter.
++		return false;
++	}
++	if (!((filename[0] >= 'a' && filename[0] <= 'z') || (filename[0] >= 'A' && filename[0] <= 'Z'))) {
++		return false;
++	}
++	for (idx_t i = 1; i < scheme_end; i++) {
++		auto c = filename[i];
++		if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '+' ||
++		      c == '-' || c == '.')) {
++			return false;
++		}
++	}
++	return true;
++}
++
+ // matches hive partitions in file name. For example:
+ // 	- s3://bucket/var1=value1/bla/bla/var2=value2
+ //  - http(s)://domain(:port)/lala/kasdl/var1=value1/?not-a-var=not-a-value
+@@ -98,9 +119,9 @@ std::map<string, string> HivePartitioning::Parse(const string &filename) {
+ 	idx_t partition_start = 0;
+ 	idx_t equality_sign = 0;
+ 	bool candidate_partition = true;
++	const bool uri_path = HasURIScheme(filename);
+ 	std::map<string, string> result;
+ 	for (idx_t c = 0; c < filename.size(); c++) {
++		if (uri_path && (filename[c] == '?' || filename[c] == '#')) {
++			// URI query and fragment text cannot contain path partitions
++			break;
++		}
+ 		if (filename[c] == '?' || filename[c] == '\n') {
+ 			// get parameter or newline - not a partition
+ 			candidate_partition = false;
+diff --git a/test/common/CMakeLists.txt b/test/common/CMakeLists.txt
+--- a/test/common/CMakeLists.txt
++++ b/test/common/CMakeLists.txt
+@@ -14,6 +14,7 @@ add_library_unity(
+   test_file_system.cpp
+   test_caching_file_system_wrapper.cpp
+   test_external_file_cache.cpp
++  test_hive_partitioning.cpp
+   test_hyperlog.cpp
+   test_lru_cache.cpp
+   test_numeric_cast.cpp

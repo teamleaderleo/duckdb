@@ -1,0 +1,153 @@
+name: Fieldwork Hive URI metadata boundary
+
+on:
+  push:
+    branches:
+      - fieldwork/hive-query-boundary-b3062a5
+  pull_request:
+    branches:
+      - fieldwork/base-duckdb-b3062a5-clean
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fieldwork-hive-uri-boundary-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      BASE_SHA: daa81697e31a3dc97a93f11220037cd2213af6cd
+      SOURCE_BRANCH: fieldwork/hive-uri-boundary-daa8169
+      CARRIER_BRANCH: fieldwork/hive-query-boundary-b3062a5
+      GEN: ninja
+    steps:
+      - name: Check out clean current-main source branch
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: fieldwork/hive-uri-boundary-daa8169
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Verify source branch base
+        shell: bash
+        run: |
+          set -euxo pipefail
+          test "$(git merge-base HEAD "$BASE_SHA")" = "$BASE_SHA"
+
+      - name: Materialize exact three-file source diff
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git fetch origin "$CARRIER_BRANCH"
+          git show "origin/$CARRIER_BRANCH:fieldwork/materialize_hive_uri_boundary.py" > /tmp/materialize_hive_uri_boundary.py
+          git show "origin/$CARRIER_BRANCH:test/common/test_hive_partitioning.cpp" > /tmp/test_hive_partitioning.cpp
+          python3 /tmp/materialize_hive_uri_boundary.py
+          cp /tmp/test_hive_partitioning.cpp test/common/test_hive_partitioning.cpp
+          git diff --check
+          diff_files=$({
+            git diff --name-only "$BASE_SHA"
+            git ls-files --others --exclude-standard
+          } | sort -u)
+          expected_files=$(printf '%s\n' \
+            src/common/hive_partitioning.cpp \
+            test/common/CMakeLists.txt \
+            test/common/test_hive_partitioning.cpp | sort)
+          test "$diff_files" = "$expected_files"
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -y -qq
+          sudo apt-get install -y -qq ninja-build libcurl4-openssl-dev
+
+      - name: Run repository and formatting gates
+        shell: bash
+        run: |
+          set -euxo pipefail
+          make test_ci
+          make -j4 format_tools
+          make format-fix
+          make format-check-silent enum-integrity-check extension-patch-check -j2 -Otarget
+          git diff --check
+          git diff --exit-code -- . \
+            ':!src/common/hive_partitioning.cpp' \
+            ':!test/common/CMakeLists.txt' \
+            ':!test/common/test_hive_partitioning.cpp'
+
+      - name: Configure DuckDB with Parquet and HTTPFS
+        run: |
+          cmake -S . -B build/hive-uri-boundary -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DBUILD_EXTENSIONS='parquet;httpfs' \
+            -DFORCE_COLORED_OUTPUT=1
+
+      - name: Build CLI and native test runner
+        run: cmake --build build/hive-uri-boundary --target duckdb unittest --parallel 2
+
+      - name: Run native Hive parser regression
+        run: ./build/hive-uri-boundary/test/unittest '[hive_partitioning]'
+
+      - name: Verify HTTP URI metadata boundaries
+        shell: bash
+        run: |
+          set -euxo pipefail
+          CLI="$(pwd)/build/hive-uri-boundary/duckdb"
+          ROOT=/tmp/duckdb-hive-uri-boundary
+          rm -rf "$ROOT"
+          mkdir -p "$ROOT/p=real" "$ROOT/literal?segment/p=local" "$ROOT/literal#segment/p=hash" "$ROOT/C:/p=drive"
+          "$CLI" -c "COPY (SELECT 7 AS id) TO '$ROOT/data.parquet' (FORMAT PARQUET);"
+          "$CLI" -c "COPY (SELECT 8 AS id) TO '$ROOT/p=real/data.parquet' (FORMAT PARQUET);"
+          "$CLI" -c "COPY (SELECT 9 AS id) TO '$ROOT/second.parquet' (FORMAT PARQUET);"
+          "$CLI" -c "COPY (SELECT 10 AS id) TO '$ROOT/literal?segment/p=local/data.parquet' (FORMAT PARQUET);"
+          "$CLI" -c "COPY (SELECT 11 AS id) TO '$ROOT/literal#segment/p=hash/data.parquet' (FORMAT PARQUET);"
+          "$CLI" -c "COPY (SELECT 12 AS id) TO '$ROOT/C:/p=drive/data.parquet' (FORMAT PARQUET);"
+
+          test "$("$CLI" -csv -noheader -c "SELECT p, id FROM parquet_scan('$ROOT/literal?segment/p=local/data.parquet', hive_partitioning=1);")" = 'local,10'
+          test "$("$CLI" -csv -noheader -c "SELECT p, id FROM parquet_scan('$ROOT/literal#segment/p=hash/data.parquet', hive_partitioning=1);")" = 'hash,11'
+          test "$(cd "$ROOT" && "$CLI" -csv -noheader -c "SELECT p, id FROM parquet_scan('C://p=drive/data.parquet', hive_partitioning=1);")" = 'drive,12'
+
+          python3 -m http.server 8123 --bind 127.0.0.1 --directory "$ROOT" > /tmp/hive-uri-http.log 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" || true' EXIT
+          sleep 2
+
+          for suffix in '?redirect=/p=fake/file' '#redirect=/p=fake/file'; do
+            test "$("$CLI" -csv -noheader -c "LOAD httpfs; SELECT id FROM parquet_scan('http://127.0.0.1:8123/data.parquet${suffix}', hive_partitioning=1);")" = '7'
+            set +e
+            "$CLI" -c "LOAD httpfs; SELECT p FROM parquet_scan('http://127.0.0.1:8123/data.parquet${suffix}', hive_partitioning=1);" > /tmp/no-phantom.log 2>&1
+            status=$?
+            set -e
+            cat /tmp/no-phantom.log
+            test "$status" -ne 0
+            grep -F 'Referenced column "p" not found' /tmp/no-phantom.log
+          done
+
+          test "$("$CLI" -csv -noheader -c "LOAD httpfs; SELECT p, id FROM parquet_scan('http://127.0.0.1:8123/p=real/data.parquet?redirect=/q=fake/file', hive_partitioning=1);")" = 'real,8'
+
+          set +e
+          "$CLI" -c "LOAD httpfs; SELECT q FROM parquet_scan('http://127.0.0.1:8123/p=real/data.parquet?redirect=/q=fake/file', hive_partitioning=1);" > /tmp/no-query-column.log 2>&1
+          status=$?
+          set -e
+          cat /tmp/no-query-column.log
+          test "$status" -ne 0
+          grep -F 'Referenced column "q" not found' /tmp/no-query-column.log
+
+          test "$("$CLI" -csv -noheader -c "LOAD httpfs; SELECT count(*) FROM parquet_scan(['http://127.0.0.1:8123/data.parquet?redirect=/q=fake/file','http://127.0.0.1:8123/second.parquet?redirect=/r=fake/file'], hive_partitioning=1);")" = '2'
+          cat /tmp/hive-uri-http.log
+
+      - name: Commit tested source to clean branch
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git add src/common/hive_partitioning.cpp test/common/CMakeLists.txt test/common/test_hive_partitioning.cpp
+          if ! git diff --cached --quiet; then
+            git config user.name 'Fieldwork Automation'
+            git config user.email 'actions@users.noreply.github.com'
+            git commit -m 'Stop Hive parsing at URI metadata boundaries'
+            git push origin "HEAD:refs/heads/$SOURCE_BRANCH"
+          fi
+          git log -1 --format='%H %s'
