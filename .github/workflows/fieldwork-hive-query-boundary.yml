@@ -1,4 +1,4 @@
-name: Fieldwork Hive query boundary
+name: Fieldwork Hive URI metadata boundary
 
 on:
   push:
@@ -10,10 +10,10 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
-  group: fieldwork-hive-query-boundary-${{ github.ref }}
+  group: fieldwork-hive-uri-boundary-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -21,30 +21,147 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     env:
-      BASE_SHA: b3062a5e82f50d77ff6e1006a36f645a79bc4936
+      BASE_SHA: daa81697e31a3dc97a93f11220037cd2213af6cd
+      SOURCE_BRANCH: fieldwork/hive-uri-boundary-daa8169
       GEN: ninja
     steps:
-      - name: Check out candidate carrier
+      - name: Check out clean current-main source branch
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
+          ref: fieldwork/hive-uri-boundary-daa8169
           fetch-depth: 0
+          persist-credentials: true
 
-      - name: Materialize candidate source and native tests
+      - name: Verify source branch base
         shell: bash
         run: |
           set -euxo pipefail
-          cp fieldwork/hive_query_boundary.patch /tmp/hive-query.patch
-          cp test/common/test_hive_partitioning.cpp /tmp/test_hive_partitioning.cpp
-          git reset --hard "$BASE_SHA"
-          rm -rf build
-          git apply --check /tmp/hive-query.patch
-          git apply /tmp/hive-query.patch
-          cp /tmp/test_hive_partitioning.cpp test/common/test_hive_partitioning.cpp
+          test "$(git merge-base HEAD "$BASE_SHA")" = "$BASE_SHA"
+
+      - name: Materialize exact three-file source diff
+        shell: bash
+        run: |
+          set -euxo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          source_path = Path('src/common/hive_partitioning.cpp')
+          source = source_path.read_text()
+
+          if 'static bool HasURIScheme(const string &filename)' not in source:
+              marker = '''bool HivePartitioning::IsNull(const string &input) {
+          \treturn StringUtil::CIEquals(input, "NULL") || input == "__HIVE_DEFAULT_PARTITION__";
+          }
+
+          '''
+              helper = '''static bool HasURIScheme(const string &filename) {
+          \tauto scheme_end = filename.find("://");
+          \tif (scheme_end == string::npos || scheme_end <= 1) {
+          \t\t// A one-character prefix can be a Windows drive letter.
+          \t\treturn false;
+          \t}
+          \tif (!((filename[0] >= 'a' && filename[0] <= 'z') || (filename[0] >= 'A' && filename[0] <= 'Z'))) {
+          \t\treturn false;
+          \t}
+          \tfor (idx_t i = 1; i < scheme_end; i++) {
+          \t\tauto c = filename[i];
+          \t\tif (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '+' ||
+          \t\t      c == '-' || c == '.')) {
+          \t\t\treturn false;
+          \t\t}
+          \t}
+          \treturn true;
+          }
+
+          '''
+              if marker not in source:
+                  raise RuntimeError('IsNull insertion point changed')
+              source = source.replace(marker, marker + helper, 1)
+
+              state_marker = '''\tbool candidate_partition = true;
+          \tstd::map<string, string> result;
+          '''
+              state_replacement = '''\tbool candidate_partition = true;
+          \tconst bool uri_path = HasURIScheme(filename);
+          \tstd::map<string, string> result;
+          '''
+              if state_marker not in source:
+                  raise RuntimeError('Parse state insertion point changed')
+              source = source.replace(state_marker, state_replacement, 1)
+
+              loop_marker = '''\tfor (idx_t c = 0; c < filename.size(); c++) {
+          \t\tif (filename[c] == '?' || filename[c] == '\\n') {
+          '''
+              loop_replacement = '''\tfor (idx_t c = 0; c < filename.size(); c++) {
+          \t\tif (uri_path && (filename[c] == '?' || filename[c] == '#')) {
+          \t\t\t// URI query and fragment text cannot contain path partitions
+          \t\t\tbreak;
+          \t\t}
+          \t\tif (filename[c] == '?' || filename[c] == '\\n') {
+          '''
+              if loop_marker not in source:
+                  raise RuntimeError('Parse loop insertion point changed')
+              source = source.replace(loop_marker, loop_replacement, 1)
+              source_path.write_text(source)
+
+          cmake_path = Path('test/common/CMakeLists.txt')
+          cmake = cmake_path.read_text()
+          if 'test_hive_partitioning.cpp' not in cmake:
+              marker = '  test_external_file_cache.cpp\n'
+              if marker not in cmake:
+                  raise RuntimeError('test/common CMake insertion point changed')
+              cmake = cmake.replace(marker, marker + '  test_hive_partitioning.cpp\n', 1)
+              cmake_path.write_text(cmake)
+
+          test_path = Path('test/common/test_hive_partitioning.cpp')
+          test_path.write_text('''#include "duckdb/common/hive_partitioning.hpp"
+          #include "catch.hpp"
+
+          using namespace duckdb;
+
+          TEST_CASE("Hive partition parsing stops at URI metadata boundaries", "[hive_partitioning]") {
+          \tauto query = HivePartitioning::Parse("https://host/p=real/file.parquet?redirect=/q=fake/file");
+          \tREQUIRE(query.size() == 1);
+          \tREQUIRE(query.at("p") == "real");
+          \tREQUIRE(query.find("q") == query.end());
+
+          \tauto fragment = HivePartitioning::Parse("https://host/p=real/file.parquet#redirect=/q=fake/file");
+          \tREQUIRE(fragment.size() == 1);
+          \tREQUIRE(fragment.at("p") == "real");
+          \tREQUIRE(fragment.find("q") == fragment.end());
+
+          \tauto custom_scheme =
+          \t    HivePartitioning::Parse("s3+test://bucket/p=real/file.parquet?redirect=/q=fake/file");
+          \tREQUIRE(custom_scheme.size() == 1);
+          \tREQUIRE(custom_scheme.at("p") == "real");
+          \tREQUIRE(custom_scheme.find("q") == custom_scheme.end());
+          }
+
+          TEST_CASE("Hive partition parsing preserves local path characters", "[hive_partitioning]") {
+          \tauto question_mark = HivePartitioning::Parse("/tmp/literal?segment/p=local/file.parquet");
+          \tREQUIRE(question_mark.size() == 1);
+          \tREQUIRE(question_mark.at("p") == "local");
+
+          \tauto fragment = HivePartitioning::Parse("/tmp/literal#segment/p=hash/file.parquet");
+          \tREQUIRE(fragment.size() == 1);
+          \tREQUIRE(fragment.at("p") == "hash");
+
+          \tauto windows_drive = HivePartitioning::Parse("C://p=drive/file.parquet");
+          \tREQUIRE(windows_drive.size() == 1);
+          \tREQUIRE(windows_drive.at("p") == "drive");
+
+          \tauto embedded_scheme_text = HivePartitioning::Parse("relative/http://p=local/file.parquet");
+          \tREQUIRE(embedded_scheme_text.size() == 1);
+          \tREQUIRE(embedded_scheme_text.at("p") == "local");
+          }
+          ''')
+          PY
+
           git diff --check
           diff_files=$({
             git diff --name-only "$BASE_SHA"
             git ls-files --others --exclude-standard
-          } | sort)
+          } | sort -u)
           expected_files=$(printf '%s\n' \
             src/common/hive_partitioning.cpp \
             test/common/CMakeLists.txt \
@@ -68,23 +185,23 @@ jobs:
 
       - name: Configure DuckDB with Parquet and HTTPFS
         run: |
-          cmake -S . -B build/hive-query-boundary -G Ninja \
+          cmake -S . -B build/hive-uri-boundary -G Ninja \
             -DCMAKE_BUILD_TYPE=Debug \
             -DBUILD_EXTENSIONS='parquet;httpfs' \
             -DFORCE_COLORED_OUTPUT=1
 
       - name: Build CLI and native test runner
-        run: cmake --build build/hive-query-boundary --target duckdb unittest --parallel 2
+        run: cmake --build build/hive-uri-boundary --target duckdb unittest --parallel 2
 
       - name: Run native Hive parser regression
-        run: ./build/hive-query-boundary/test/unittest '[hive_partitioning]'
+        run: ./build/hive-uri-boundary/test/unittest '[hive_partitioning]'
 
-      - name: Verify URI metadata boundaries and local path compatibility
+      - name: Verify HTTP URI metadata boundaries
         shell: bash
         run: |
           set -euxo pipefail
-          CLI="$(pwd)/build/hive-query-boundary/duckdb"
-          ROOT=/tmp/duckdb-hive-query-boundary
+          CLI="$(pwd)/build/hive-uri-boundary/duckdb"
+          ROOT=/tmp/duckdb-hive-uri-boundary
           rm -rf "$ROOT"
           mkdir -p "$ROOT/p=real" "$ROOT/literal?segment/p=local" "$ROOT/literal#segment/p=hash" "$ROOT/C:/p=drive"
           "$CLI" -c "COPY (SELECT 7 AS id) TO '$ROOT/data.parquet' (FORMAT PARQUET);"
@@ -105,7 +222,7 @@ jobs:
           test "$actual" = 'drive,12'
 
           python3 -m http.server 8123 --bind 127.0.0.1 --directory "$ROOT" \
-            > /tmp/hive-query-http.log 2>&1 &
+            > /tmp/hive-uri-http.log 2>&1 &
           server_pid=$!
           trap 'kill "$server_pid" || true' EXIT
           sleep 2
@@ -146,4 +263,17 @@ jobs:
             ], hive_partitioning=1);")
           test "$actual" = '2'
 
-          cat /tmp/hive-query-http.log
+          cat /tmp/hive-uri-http.log
+
+      - name: Commit tested source to clean branch
+        shell: bash
+        run: |
+          set -euxo pipefail
+          git add src/common/hive_partitioning.cpp test/common/CMakeLists.txt test/common/test_hive_partitioning.cpp
+          if ! git diff --cached --quiet; then
+            git config user.name 'Fieldwork Automation'
+            git config user.email 'actions@users.noreply.github.com'
+            git commit -m 'Stop Hive parsing at URI metadata boundaries'
+            git push origin "HEAD:refs/heads/$SOURCE_BRANCH"
+          fi
+          git log -1 --format='%H %s'
