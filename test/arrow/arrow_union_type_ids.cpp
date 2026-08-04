@@ -1,7 +1,6 @@
 #include "catch.hpp"
 
 #include "arrow/arrow_test_helper.hpp"
-#include "duckdb/common/adbc/single_batch_array_stream.hpp"
 
 using namespace duckdb;
 
@@ -11,6 +10,37 @@ static void NoOpSchemaRelease(ArrowSchema *schema) {
 
 static void NoOpArrayRelease(ArrowArray *array) {
 	array->release = nullptr;
+}
+
+struct SingleBatchStreamState {
+	ArrowSchema schema;
+	ArrowArray batch;
+	bool consumed = false;
+};
+
+static int SingleBatchGetSchema(ArrowArrayStream *stream, ArrowSchema *out) {
+	auto &state = *reinterpret_cast<SingleBatchStreamState *>(stream->private_data);
+	*out = state.schema;
+	return 0;
+}
+
+static int SingleBatchGetNext(ArrowArrayStream *stream, ArrowArray *out) {
+	auto &state = *reinterpret_cast<SingleBatchStreamState *>(stream->private_data);
+	if (state.consumed) {
+		*out = {};
+		return 0;
+	}
+	*out = state.batch;
+	state.consumed = true;
+	return 0;
+}
+
+static const char *SingleBatchGetLastError(ArrowArrayStream *) {
+	return nullptr;
+}
+
+static void SingleBatchRelease(ArrowArrayStream *stream) {
+	stream->release = nullptr;
 }
 
 static vector<Value> ScanSparseIntUnion(const char *format, const vector<int8_t> &physical_type_ids,
@@ -83,10 +113,13 @@ static vector<Value> ScanSparseIntUnion(const char *format, const vector<int8_t>
 	root_array.children = root_child_array_ptrs;
 	root_array.release = NoOpArrayRelease;
 
+	SingleBatchStreamState stream_state {root_schema, root_array};
 	ArrowArrayStream stream = {};
-	AdbcError adbc_error = {};
-	auto status = duckdb_adbc::BatchToArrayStream(&root_array, &root_schema, &stream, &adbc_error);
-	REQUIRE(status == ADBC_STATUS_OK);
+	stream.get_schema = SingleBatchGetSchema;
+	stream.get_next = SingleBatchGetNext;
+	stream.get_last_error = SingleBatchGetLastError;
+	stream.release = SingleBatchRelease;
+	stream.private_data = &stream_state;
 
 	DuckDB db(nullptr);
 	Connection connection(db);
@@ -95,9 +128,6 @@ static vector<Value> ScanSparseIntUnion(const char *format, const vector<int8_t>
 	try {
 		result = connection.TableFunction("arrow_scan", params)->Execute();
 	} catch (const std::exception &exception) {
-		if (stream.release) {
-			stream.release(&stream);
-		}
 		REQUIRE(expected_error);
 		REQUIRE(string(exception.what()).find(expected_error) != string::npos);
 		return {};
