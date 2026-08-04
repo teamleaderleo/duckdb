@@ -14,7 +14,7 @@ static void NoOpArrayRelease(ArrowArray *array) {
 }
 
 static vector<Value> ScanSparseIntUnion(const char *format, const vector<int8_t> &physical_type_ids,
-                                        idx_t union_offset = 0, bool expect_error = false) {
+                                        idx_t union_offset = 0, const char *expected_error = nullptr) {
 	constexpr idx_t N_ROWS = 3;
 	const auto physical_count = N_ROWS + union_offset;
 	REQUIRE(physical_type_ids.size() == physical_count);
@@ -91,17 +91,22 @@ static vector<Value> ScanSparseIntUnion(const char *format, const vector<int8_t>
 	DuckDB db(nullptr);
 	Connection connection(db);
 	auto params = ArrowTestHelper::ConstructArrowScan(stream);
-	auto result = ArrowTestHelper::ScanArrowObject(connection, params);
+	unique_ptr<QueryResult> result;
+	try {
+		result = connection.TableFunction("arrow_scan", params)->Execute();
+	} catch (const std::exception &exception) {
+		if (stream.release) {
+			stream.release(&stream);
+		}
+		REQUIRE(expected_error);
+		REQUIRE(string(exception.what()).find(expected_error) != string::npos);
+		return {};
+	}
 	REQUIRE(result);
 
-	if (expect_error) {
-		while (!result->HasError()) {
-			auto chunk = result->Fetch();
-			if (!chunk || chunk->size() == 0) {
-				break;
-			}
-		}
+	if (expected_error) {
 		REQUIRE(result->HasError());
+		REQUIRE(result->GetError().find(expected_error) != string::npos);
 		return {};
 	}
 
@@ -157,21 +162,23 @@ TEST_CASE("Arrow sparse union mapping honors a nonzero parent offset", "[arrow][
 }
 
 TEST_CASE("Arrow sparse union rejects duplicate schema type IDs", "[arrow][fieldwork]") {
-	ScanSparseIntUnion("+us:5,5,9", {5, 5, 9}, 0, true);
+	ScanSparseIntUnion("+us:5,5,9", {5, 5, 9}, 0, "Arrow union type ID 5 is duplicated");
 }
 
 TEST_CASE("Arrow sparse union rejects duplicate negative schema type IDs", "[arrow][fieldwork]") {
-	ScanSparseIntUnion("+us:-128,-128,127", {-128, -128, 127}, 0, true);
+	ScanSparseIntUnion("+us:-128,-128,127", {-128, -128, 127}, 0,
+	                   "Arrow union type ID -128 is duplicated");
 }
 
 TEST_CASE("Arrow sparse union rejects a schema type-ID count mismatch", "[arrow][fieldwork]") {
-	ScanSparseIntUnion("+us:5,7", {5, 7, 9}, 0, true);
+	ScanSparseIntUnion("+us:5,7", {5, 7, 9}, 0, "Arrow union type ID count must match child count");
 }
 
 TEST_CASE("Arrow sparse union rejects an unmapped runtime type ID", "[arrow][fieldwork]") {
-	ScanSparseIntUnion("+us:5,7,9", {5, 8, 9}, 0, true);
+	ScanSparseIntUnion("+us:5,7,9", {5, 8, 9}, 0, "Arrow union type ID 8 does not map to a child");
 }
 
 TEST_CASE("Arrow sparse union rejects an unmapped negative runtime type ID", "[arrow][fieldwork]") {
-	ScanSparseIntUnion("+us:-128,0,127", {-128, -1, 127}, 0, true);
+	ScanSparseIntUnion("+us:-128,0,127", {-128, -1, 127}, 0,
+	                   "Arrow union type ID -1 does not map to a child");
 }
