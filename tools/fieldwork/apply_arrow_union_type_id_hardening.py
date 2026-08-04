@@ -67,6 +67,8 @@ replace_once(
 ''',
     '''\t\tduckdb::vector<Vector> children;
 \t\tconst auto union_child_parent_offset = NumericCast<uint64_t>(array.offset) + parent_offset;
+\t\tconst auto union_child_nested_offset =
+\t\t    nested_offset == -1 ? nested_offset : NumericCast<int64_t>(array.offset) + nested_offset;
 \t\tfor (idx_t child_idx = 0; child_idx < NumericCast<idx_t>(array.n_children); child_idx++) {
 \t\t\tVector child(members[child_idx].second, size);
 \t\t\tauto &child_array = *array.children[child_idx];
@@ -74,24 +76,25 @@ replace_once(
 \t\t\tauto &child_type = union_info.GetChild(child_idx);
 
 \t\t\tArrowToDuckDBConversion::SetValidityMask(child, child_array, chunk_offset, size,
-\t\t\t                                         NumericCast<int64_t>(union_child_parent_offset), nested_offset);
+\t\t\t                                         NumericCast<int64_t>(union_child_parent_offset),
+\t\t\t                                         union_child_nested_offset);
 \t\t\tauto array_physical_type = child_type.GetPhysicalType();
 
 \t\t\tswitch (array_physical_type) {
 \t\t\tcase ArrowArrayPhysicalType::DICTIONARY_ENCODED:
 \t\t\t\tArrowToDuckDBConversion::ColumnArrowToDuckDBDictionary(
-\t\t\t\t    child, child_array, chunk_offset, child_state, size, child_type, nested_offset, &validity_mask,
-\t\t\t\t    union_child_parent_offset);
+\t\t\t\t    child, child_array, chunk_offset, child_state, size, child_type, union_child_nested_offset,
+\t\t\t\t    &validity_mask, union_child_parent_offset);
 \t\t\t\tbreak;
 \t\t\tcase ArrowArrayPhysicalType::RUN_END_ENCODED:
 \t\t\t\tArrowToDuckDBConversion::ColumnArrowToDuckDBRunEndEncoded(
-\t\t\t\t    child, child_array, chunk_offset, child_state, size, child_type, nested_offset, &validity_mask,
-\t\t\t\t    union_child_parent_offset);
+\t\t\t\t    child, child_array, chunk_offset, child_state, size, child_type, union_child_nested_offset,
+\t\t\t\t    &validity_mask, union_child_parent_offset);
 \t\t\t\tbreak;
 \t\t\tcase ArrowArrayPhysicalType::DEFAULT:
-\t\t\t\tArrowToDuckDBConversion::ColumnArrowToDuckDB(child, child_array, chunk_offset, child_state, size,
-\t\t\t\t                                             child_type, nested_offset, &validity_mask,
-\t\t\t\t                                             union_child_parent_offset, false);
+\t\t\t\tArrowToDuckDBConversion::ColumnArrowToDuckDB(
+\t\t\t\t    child, child_array, chunk_offset, child_state, size, child_type, union_child_nested_offset,
+\t\t\t\t    &validity_mask, union_child_parent_offset, false);
 \t\t\t\tbreak;
 \t\t\tdefault:
 \t\t\t\tthrow NotImplementedException("ArrowArrayPhysicalType not recognized");
@@ -103,4 +106,4 @@ replace_once(
 )
 
 print("FIELDWORK_262_HARDENING=nonnegative-type-id-duplicate-rejection")
-print("FIELDWORK_262_REPAIR=union-child-parent-offset")
+print("FIELDWORK_262_REPAIR=union-child-offset-propagation")
