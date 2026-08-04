@@ -253,29 +253,47 @@ unique_ptr<ArrowType> ArrowType::GetTypeFromFormat(ClientContext &context, Arrow
 		auto type_info = make_uniq<ArrowStructInfo>(std::move(children));
 		auto struct_type = make_uniq<ArrowType>(LogicalType::STRUCT(std::move(child_types)), std::move(type_info));
 		return struct_type;
-	} else if (format[0] == '+' && format[1] == 'u') {
-		if (format[2] != 's') {
-			throw NotImplementedException("Unsupported Internal Arrow Type: \"%c\" Union", format[2]);
+	} else if (format.size() >= 2 && format[0] == '+' && format[1] == 'u') {
+		if (format.size() < 4 || format[2] != 's') {
+			throw NotImplementedException("Unsupported Internal Arrow Union Type: \"%s\"", format);
 		}
-		D_ASSERT(format[3] == ':');
+		if (format[3] != ':') {
+			throw InvalidInputException("Invalid Arrow sparse union format string: \"%s\"", format);
+		}
 
-		std::string prefix = "+us:";
-		// TODO: what are these type ids actually for?
-		auto type_ids = StringUtil::Split(format.substr(prefix.size()), ',');
-
-		child_list_t<LogicalType> members;
-		vector<shared_ptr<ArrowType>> children;
+		auto type_id_strings = StringUtil::Split(format.substr(4), ',');
 		if (schema.n_children == 0) {
 			throw InvalidInputException("Attempted to convert a UNION with no fields to DuckDB which is not supported");
 		}
+		if (type_id_strings.size() != NumericCast<idx_t>(schema.n_children)) {
+			throw InvalidInputException("Arrow union type ID count must match child count");
+		}
+
+		vector<int8_t> type_ids;
+		type_ids.reserve(type_id_strings.size());
+		for (const auto &type_id_string : type_id_strings) {
+			size_t parsed_length = 0;
+			int parsed_type_id;
+			try {
+				parsed_type_id = std::stoi(type_id_string, &parsed_length);
+			} catch (const std::exception &) {
+				throw InvalidInputException("Invalid Arrow union type ID: \"%s\"", type_id_string);
+			}
+			if (parsed_length != type_id_string.size() || parsed_type_id < 0 || parsed_type_id > 127) {
+				throw InvalidInputException("Arrow union type ID out of range: %s", type_id_string);
+			}
+			type_ids.push_back(NumericCast<int8_t>(parsed_type_id));
+		}
+
+		child_list_t<LogicalType> members;
+		vector<shared_ptr<ArrowType>> children;
 		for (idx_t type_idx = 0; type_idx < static_cast<idx_t>(schema.n_children); type_idx++) {
 			auto type = schema.children[type_idx];
-
 			children.emplace_back(GetArrowLogicalType(context, *type));
 			members.emplace_back(type->name, children.back()->GetDuckType());
 		}
 
-		auto type_info = make_uniq<ArrowStructInfo>(std::move(children));
+		auto type_info = make_uniq<ArrowUnionInfo>(std::move(children), std::move(type_ids));
 		auto union_type = make_uniq<ArrowType>(LogicalType::UNION(members), std::move(type_info));
 		return union_type;
 	} else if (format == "+r") {
@@ -368,7 +386,7 @@ LogicalType ArrowType::GetDuckType(bool use_dictionary) const {
 		return LogicalType::MAP(StructType::GetChildType(struct_type, 0), StructType::GetChildType(struct_type, 1));
 	}
 	case LogicalTypeId::UNION: {
-		auto &union_info = type_info->Cast<ArrowStructInfo>();
+		auto &union_info = type_info->Cast<ArrowUnionInfo>();
 		child_list_t<LogicalType> new_children;
 		for (idx_t i = 0; i < union_info.ChildCount(); i++) {
 			auto &child = union_info.GetChild(i);

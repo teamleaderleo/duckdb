@@ -1234,8 +1234,15 @@ void ArrowToDuckDBConversion::ColumnArrowToDuckDB(Vector &vector, ArrowArray &ar
 		auto members = UnionType::CopyMemberTypes(vector.GetType());
 
 		auto &validity_mask = FlatVector::ValidityMutable(vector);
-		auto &union_info = arrow_type.GetTypeInfo<ArrowStructInfo>();
+		auto &union_info = arrow_type.GetTypeInfo<ArrowUnionInfo>();
+		if (array.n_children < 0 || NumericCast<idx_t>(array.n_children) != union_info.ChildCount() ||
+		    (array.n_children > 0 && !array.children)) {
+			throw InvalidInputException("Arrow union array child count must match schema child count");
+		}
 		duckdb::vector<Vector> children;
+		const auto union_child_parent_offset = NumericCast<uint64_t>(array.offset) + parent_offset;
+		const auto union_child_nested_offset =
+		    nested_offset == -1 ? nested_offset : NumericCast<int64_t>(array.offset) + nested_offset;
 		for (idx_t child_idx = 0; child_idx < NumericCast<idx_t>(array.n_children); child_idx++) {
 			Vector child(members[child_idx].second, size);
 			auto &child_array = *array.children[child_idx];
@@ -1243,21 +1250,25 @@ void ArrowToDuckDBConversion::ColumnArrowToDuckDB(Vector &vector, ArrowArray &ar
 			auto &child_type = union_info.GetChild(child_idx);
 
 			ArrowToDuckDBConversion::SetValidityMask(child, child_array, chunk_offset, size,
-			                                         NumericCast<int64_t>(parent_offset), nested_offset);
+			                                         NumericCast<int64_t>(union_child_parent_offset),
+			                                         union_child_nested_offset);
 			auto array_physical_type = child_type.GetPhysicalType();
 
 			switch (array_physical_type) {
 			case ArrowArrayPhysicalType::DICTIONARY_ENCODED:
-				ArrowToDuckDBConversion::ColumnArrowToDuckDBDictionary(child, child_array, chunk_offset, child_state,
-				                                                       size, child_type);
+				ArrowToDuckDBConversion::ColumnArrowToDuckDBDictionary(
+				    child, child_array, chunk_offset, child_state, size, child_type, union_child_nested_offset,
+				    &validity_mask, union_child_parent_offset);
 				break;
 			case ArrowArrayPhysicalType::RUN_END_ENCODED:
-				ArrowToDuckDBConversion::ColumnArrowToDuckDBRunEndEncoded(child, child_array, chunk_offset, child_state,
-				                                                          size, child_type);
+				ArrowToDuckDBConversion::ColumnArrowToDuckDBRunEndEncoded(
+				    child, child_array, chunk_offset, child_state, size, child_type, union_child_nested_offset,
+				    &validity_mask, union_child_parent_offset);
 				break;
 			case ArrowArrayPhysicalType::DEFAULT:
-				ArrowToDuckDBConversion::ColumnArrowToDuckDB(child, child_array, chunk_offset, child_state, size,
-				                                             child_type, nested_offset, &validity_mask, false);
+				ArrowToDuckDBConversion::ColumnArrowToDuckDB(
+				    child, child_array, chunk_offset, child_state, size, child_type, union_child_nested_offset,
+				    &validity_mask, union_child_parent_offset, false);
 				break;
 			default:
 				throw NotImplementedException("ArrowArrayPhysicalType not recognized");
@@ -1267,15 +1278,10 @@ void ArrowToDuckDBConversion::ColumnArrowToDuckDB(Vector &vector, ArrowArray &ar
 		}
 
 		for (idx_t row_idx = 0; row_idx < size; row_idx++) {
-			auto tag = NumericCast<uint8_t>(type_ids[row_idx]);
-
-			auto out_of_range = tag >= array.n_children;
-			if (out_of_range) {
-				throw InvalidInputException("Arrow union tag out of range: %d", tag);
-			}
-
-			const Value &value = children[tag].GetValue(row_idx);
-			vector.SetValue(row_idx, value.IsNull() ? Value() : Value::UNION(members, tag, value));
+			auto child_idx = union_info.TypeIdToChildIndex(type_ids[row_idx]);
+			const Value &value = children[child_idx].GetValue(row_idx);
+			vector.SetValue(row_idx,
+			                value.IsNull() ? Value() : Value::UNION(members, NumericCast<uint8_t>(child_idx), value));
 		}
 
 		break;

@@ -128,6 +128,56 @@ ArrowType &ArrowListInfo::GetChild() const {
 }
 
 //===--------------------------------------------------------------------===//
+// ArrowUnionInfo
+//===--------------------------------------------------------------------===//
+
+ArrowUnionInfo::ArrowUnionInfo(vector<shared_ptr<ArrowType>> children, vector<int8_t> type_ids)
+    : ArrowTypeInfo(ArrowTypeInfoType::UNION), children(std::move(children)),
+      type_id_to_child_idx(128, DConstants::INVALID_INDEX) {
+	if (this->children.size() != type_ids.size()) {
+		throw InvalidInputException("Arrow union type ID count must match child count");
+	}
+	for (idx_t child_idx = 0; child_idx < type_ids.size(); child_idx++) {
+		auto type_id = type_ids[child_idx];
+		if (type_id < 0) {
+			throw InvalidInputException("Arrow union type ID out of range: %d", static_cast<int>(type_id));
+		}
+		auto &mapped_child_idx = type_id_to_child_idx[NumericCast<idx_t>(type_id)];
+		if (mapped_child_idx != DConstants::INVALID_INDEX) {
+			throw InvalidInputException("Arrow union type ID %d is duplicated", static_cast<int>(type_id));
+		}
+		mapped_child_idx = child_idx;
+	}
+}
+
+ArrowUnionInfo::~ArrowUnionInfo() {
+}
+
+idx_t ArrowUnionInfo::ChildCount() const {
+	return children.size();
+}
+
+const ArrowType &ArrowUnionInfo::GetChild(idx_t index) const {
+	D_ASSERT(index < children.size());
+	return *children[index];
+}
+
+const vector<shared_ptr<ArrowType>> &ArrowUnionInfo::GetChildren() const {
+	return children;
+}
+
+idx_t ArrowUnionInfo::TypeIdToChildIndex(int8_t type_id) const {
+	if (type_id < 0) {
+		throw InvalidInputException("Arrow union type ID out of range: %d", static_cast<int>(type_id));
+	}
+	auto child_idx = type_id_to_child_idx[NumericCast<idx_t>(type_id)];
+	if (child_idx == DConstants::INVALID_INDEX) {
+		throw InvalidInputException("Arrow union type ID %d does not map to a child", static_cast<int>(type_id));
+	}
+	return child_idx;
+}
+
+//===--------------------------------------------------------------------===//
 // ArrowArrayInfo
 //===--------------------------------------------------------------------===//
 
