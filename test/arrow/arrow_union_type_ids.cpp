@@ -45,7 +45,7 @@ static void SingleBatchRelease(ArrowArrayStream *stream) {
 
 static vector<Value> ScanSparseIntUnion(const char *format, const vector<int8_t> &physical_type_ids,
                                         idx_t union_offset = 0, const char *expected_error = nullptr,
-                                        bool wrap_in_fixed_size_list = false) {
+                                        bool wrap_in_fixed_size_list = false, int64_t array_child_count = 3) {
 	constexpr idx_t N_ROWS = 3;
 	const auto physical_count = N_ROWS + union_offset;
 	REQUIRE(physical_type_ids.size() == physical_count);
@@ -108,7 +108,7 @@ static vector<Value> ScanSparseIntUnion(const char *format, const vector<int8_t>
 	union_array.offset = NumericCast<int64_t>(union_offset);
 	union_array.n_buffers = 1;
 	union_array.buffers = union_buffers;
-	union_array.n_children = 3;
+	union_array.n_children = array_child_count;
 	union_array.children = union_child_array_ptrs;
 	union_array.release = NoOpArrayRelease;
 
@@ -232,6 +232,11 @@ TEST_CASE("Arrow sparse union rejects a negative schema type ID", "[arrow][field
 
 TEST_CASE("Arrow sparse union rejects a schema type-ID count mismatch", "[arrow][fieldwork]") {
 	ScanSparseIntUnion("+us:5,7", {5, 7, 9}, 0, "Arrow union type ID count must match child count");
+}
+
+TEST_CASE("Arrow sparse union rejects an array child-count mismatch", "[arrow][fieldwork]") {
+	ScanSparseIntUnion("+us:5,7,9", {5, 7, 9}, 0,
+	                   "Arrow union array child count must match schema child count", false, 2);
 }
 
 TEST_CASE("Arrow sparse union rejects an unmapped runtime type ID", "[arrow][fieldwork]") {
