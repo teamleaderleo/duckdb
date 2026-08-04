@@ -44,7 +44,8 @@ static void SingleBatchRelease(ArrowArrayStream *stream) {
 }
 
 static vector<Value> ScanSparseIntUnion(const char *format, const vector<int8_t> &physical_type_ids,
-                                        idx_t union_offset = 0, const char *expected_error = nullptr) {
+                                        idx_t union_offset = 0, const char *expected_error = nullptr,
+                                        bool wrap_in_fixed_size_list = false) {
 	constexpr idx_t N_ROWS = 3;
 	const auto physical_count = N_ROWS + union_offset;
 	REQUIRE(physical_type_ids.size() == physical_count);
@@ -66,7 +67,15 @@ static vector<Value> ScanSparseIntUnion(const char *format, const vector<int8_t>
 	union_schema.children = union_child_ptrs;
 	union_schema.release = NoOpSchemaRelease;
 
-	ArrowSchema *root_child_ptrs[1] = {&union_schema};
+	ArrowSchema *fixed_size_list_child_ptrs[1] = {&union_schema};
+	ArrowSchema fixed_size_list_schema = {};
+	fixed_size_list_schema.format = "+w:1";
+	fixed_size_list_schema.name = "wrapped_union";
+	fixed_size_list_schema.n_children = 1;
+	fixed_size_list_schema.children = fixed_size_list_child_ptrs;
+	fixed_size_list_schema.release = NoOpSchemaRelease;
+
+	ArrowSchema *root_child_ptrs[1] = {wrap_in_fixed_size_list ? &fixed_size_list_schema : &union_schema};
 	ArrowSchema root_schema = {};
 	root_schema.format = "+s";
 	root_schema.name = "root";
@@ -103,8 +112,18 @@ static vector<Value> ScanSparseIntUnion(const char *format, const vector<int8_t>
 	union_array.children = union_child_array_ptrs;
 	union_array.release = NoOpArrayRelease;
 
+	const void *fixed_size_list_buffers[1] = {nullptr};
+	ArrowArray *fixed_size_list_child_array_ptrs[1] = {&union_array};
+	ArrowArray fixed_size_list_array = {};
+	fixed_size_list_array.length = N_ROWS;
+	fixed_size_list_array.n_buffers = 1;
+	fixed_size_list_array.buffers = fixed_size_list_buffers;
+	fixed_size_list_array.n_children = 1;
+	fixed_size_list_array.children = fixed_size_list_child_array_ptrs;
+	fixed_size_list_array.release = NoOpArrayRelease;
+
 	const void *root_buffers[1] = {nullptr};
-	ArrowArray *root_child_array_ptrs[1] = {&union_array};
+	ArrowArray *root_child_array_ptrs[1] = {wrap_in_fixed_size_list ? &fixed_size_list_array : &union_array};
 	ArrowArray root_array = {};
 	root_array.length = N_ROWS;
 	root_array.n_buffers = 1;
@@ -149,7 +168,14 @@ static vector<Value> ScanSparseIntUnion(const char *format, const vector<int8_t>
 		}
 		REQUIRE(chunk->ColumnCount() == 1);
 		for (idx_t row_idx = 0; row_idx < chunk->size(); row_idx++) {
-			values.push_back(chunk->data[0].GetValue(row_idx));
+			auto value = chunk->data[0].GetValue(row_idx);
+			if (wrap_in_fixed_size_list) {
+				const auto &array_children = ArrayValue::GetChildren(value);
+				REQUIRE(array_children.size() == 1);
+				values.push_back(array_children[0]);
+			} else {
+				values.push_back(std::move(value));
+			}
 		}
 	}
 	REQUIRE_FALSE(result->HasError());
@@ -188,6 +214,11 @@ TEST_CASE("Arrow sparse union maps upper-bound type IDs", "[arrow][fieldwork]") 
 
 TEST_CASE("Arrow sparse union mapping honors a nonzero parent offset", "[arrow][fieldwork]") {
 	auto values = ScanSparseIntUnion("+us:5,7,9", {99, 5, 7, 9}, 1);
+	RequireMappedValues(values);
+}
+
+TEST_CASE("Arrow sparse union mapping honors its offset when nested in a fixed-size list", "[arrow][fieldwork]") {
+	auto values = ScanSparseIntUnion("+us:5,7,9", {99, 5, 7, 9}, 1, nullptr, true);
 	RequireMappedValues(values);
 }
 
