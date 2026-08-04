@@ -34,6 +34,22 @@ replace_once(
 
 replace_once(
     "src/function/table/arrow_conversion.cpp",
+    '''\t\tauto &validity_mask = FlatVector::ValidityMutable(vector);
+\t\tauto &union_info = arrow_type.GetTypeInfo<ArrowUnionInfo>();
+\t\tduckdb::vector<Vector> children;
+''',
+    '''\t\tauto &validity_mask = FlatVector::ValidityMutable(vector);
+\t\tauto &union_info = arrow_type.GetTypeInfo<ArrowUnionInfo>();
+\t\tif (array.n_children < 0 || NumericCast<idx_t>(array.n_children) != union_info.ChildCount() ||
+\t\t    (array.n_children > 0 && !array.children)) {
+\t\t\tthrow InvalidInputException("Arrow union array child count must match schema child count");
+\t\t}
+\t\tduckdb::vector<Vector> children;
+''',
+)
+
+replace_once(
+    "src/function/table/arrow_conversion.cpp",
     '''\t\tduckdb::vector<Vector> children;
 \t\tfor (idx_t child_idx = 0; child_idx < NumericCast<idx_t>(array.n_children); child_idx++) {
 \t\t\tVector child(members[child_idx].second, size);
@@ -106,4 +122,4 @@ replace_once(
 )
 
 print("FIELDWORK_262_HARDENING=nonnegative-type-id-duplicate-rejection")
-print("FIELDWORK_262_REPAIR=union-child-offset-propagation")
+print("FIELDWORK_262_REPAIR=union-child-offset-and-count-validation")
