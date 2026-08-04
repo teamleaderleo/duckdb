@@ -77,30 +77,30 @@ jobs:
           mkdir -p "$SOURCE_BUNDLE"
           cp --parents $(cat "$SOURCE_FILES") "$SOURCE_BUNDLE"
           grep -F 'FIELDWORK_262_PATCH=arrow-union-type-id-mapping' "$COUNTS"
-          grep -F 'FIELDWORK_262_HARDENING=signed-type-id-duplicate-rejection' "$COUNTS"
+          grep -F 'FIELDWORK_262_HARDENING=nonnegative-type-id-duplicate-rejection' "$COUNTS"
           grep -F 'FIELDWORK_262_REPAIR=union-child-parent-offset' "$COUNTS"
 
-      - name: Verify signed-byte map model
+      - name: Verify Arrow union type-code model
         run: |
           python - <<'PY'
           invalid = None
-          mapping = [invalid] * 256
-          schema_ids = [-128, 0, 127]
+          mapping = [invalid] * 128
+          schema_ids = [0, 64, 127]
           for child_idx, type_id in enumerate(schema_ids):
-              key = type_id & 0xFF
-              assert mapping[key] is invalid
-              mapping[key] = child_idx
-          assert [mapping[type_id & 0xFF] for type_id in schema_ids] == [0, 1, 2]
-          assert mapping[-1 & 0xFF] is invalid
+              assert 0 <= type_id < len(mapping)
+              assert mapping[type_id] is invalid
+              mapping[type_id] = child_idx
+          assert [mapping[type_id] for type_id in schema_ids] == [0, 1, 2]
+          assert not (0 <= -1 < len(mapping))
           duplicate = False
           try:
-              key = -128 & 0xFF
-              if mapping[key] is not invalid:
+              type_id = 64
+              if mapping[type_id] is not invalid:
                   raise ValueError('duplicate')
           except ValueError:
               duplicate = True
           assert duplicate
-          print('signed union map model: passed')
+          print('Arrow union type-code model: passed')
           PY
 
       - name: Install build dependencies
@@ -116,16 +116,16 @@ jobs:
           build/debug/test/unittest "Arrow sparse union maps identity type IDs"
           build/debug/test/unittest "Arrow sparse union maps non-sequential type IDs"
           build/debug/test/unittest "Arrow sparse union maps reordered in-range type IDs"
-          build/debug/test/unittest "Arrow sparse union maps signed type IDs"
+          build/debug/test/unittest "Arrow sparse union maps upper-bound type IDs"
           build/debug/test/unittest "Arrow sparse union mapping honors a nonzero parent offset"
 
       - name: Run malformed schema and runtime controls
         run: |
           build/debug/test/unittest "Arrow sparse union rejects duplicate schema type IDs"
-          build/debug/test/unittest "Arrow sparse union rejects duplicate negative schema type IDs"
+          build/debug/test/unittest "Arrow sparse union rejects a negative schema type ID"
           build/debug/test/unittest "Arrow sparse union rejects a schema type-ID count mismatch"
           build/debug/test/unittest "Arrow sparse union rejects an unmapped runtime type ID"
-          build/debug/test/unittest "Arrow sparse union rejects an unmapped negative runtime type ID"
+          build/debug/test/unittest "Arrow sparse union rejects a negative runtime type ID"
 
       - name: Publish exact clean source candidate
         env:
@@ -172,7 +172,7 @@ jobs:
           git diff --cached --check
           git config user.name fieldwork-repair-bot
           git config user.email fieldwork-repair-bot@users.noreply.github.com
-          git commit -m "fix(arrow): map signed sparse union type IDs"
+          git commit -m "fix(arrow): map sparse union type IDs"
           git push origin HEAD:"$SOURCE_BRANCH"
 
       - name: Retain exact hardened patch and receipts
