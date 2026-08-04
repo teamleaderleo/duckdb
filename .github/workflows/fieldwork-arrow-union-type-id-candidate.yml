@@ -78,7 +78,7 @@ jobs:
           cp --parents $(cat "$SOURCE_FILES") "$SOURCE_BUNDLE"
           grep -F 'FIELDWORK_262_PATCH=arrow-union-type-id-mapping' "$COUNTS"
           grep -F 'FIELDWORK_262_HARDENING=nonnegative-type-id-duplicate-rejection' "$COUNTS"
-          grep -F 'FIELDWORK_262_REPAIR=union-child-parent-offset' "$COUNTS"
+          grep -F 'FIELDWORK_262_REPAIR=union-child-offset-propagation' "$COUNTS"
 
       - name: Verify Arrow union type-code model
         run: |
@@ -118,6 +118,7 @@ jobs:
           build/debug/test/unittest "Arrow sparse union maps reordered in-range type IDs"
           build/debug/test/unittest "Arrow sparse union maps upper-bound type IDs"
           build/debug/test/unittest "Arrow sparse union mapping honors a nonzero parent offset"
+          build/debug/test/unittest "Arrow sparse union mapping honors its offset when nested in a fixed-size list"
 
       - name: Run malformed schema and runtime controls
         run: |
