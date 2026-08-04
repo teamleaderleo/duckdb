@@ -59,6 +59,9 @@ jobs:
           git diff > "${RUNNER_TEMP}/unit-03-candidate.patch"
           find test/sql/window -type f -name '*.test_slow' -print | sort \
             > "${RUNNER_TEMP}/unit-03-excluded-slow-tests.txt"
+          find test/sql/window -type f -name '*.test' -print | sort \
+            > "${RUNNER_TEMP}/unit-03-selected-window-tests.txt"
+          test -s "${RUNNER_TEMP}/unit-03-selected-window-tests.txt"
 
       - name: Install build dependencies
         run: |
@@ -85,8 +88,10 @@ jobs:
       - name: Run ordinary non-slow window suite
         shell: bash
         run: |
-          set -o pipefail
-          ./build/fieldwork/test/run 'test/sql/window/*.test' \
+          set -euo pipefail
+          mapfile -t tests < "${RUNNER_TEMP}/unit-03-selected-window-tests.txt"
+          test "${#tests[@]}" -gt 1
+          ./build/fieldwork/test/run "${tests[@]}" \
             2>&1 | tee "${RUNNER_TEMP}/unit-03-window-suite.log"
 
       - name: Run formatting gate
@@ -105,6 +110,7 @@ jobs:
             ${{ runner.temp }}/unit-03-changed-files.txt
             ${{ runner.temp }}/unit-03-expected-files.txt
             ${{ runner.temp }}/unit-03-excluded-slow-tests.txt
+            ${{ runner.temp }}/unit-03-selected-window-tests.txt
             ${{ runner.temp }}/unit-03-focused.log
             ${{ runner.temp }}/unit-03-window-suite.log
             ${{ runner.temp }}/unit-03-format.log
