@@ -61,12 +61,24 @@ jobs:
             src/function/table/arrow_conversion.cpp \
             src/include/duckdb/function/table/arrow/arrow_type_info.hpp \
             src/include/duckdb/function/table/arrow/enum/arrow_type_info_type.hpp \
-            test/arrow/CMakeLists.txt \
             test/arrow/arrow_union_type_ids.cpp \
             > receipt/human-owned.patch
           test -s receipt/human-owned.patch
           git apply --check --3way receipt/human-owned.patch
           git apply --3way receipt/human-owned.patch
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('test/arrow/CMakeLists.txt')
+          source = path.read_text()
+          anchor = '  arrow_output_version_buffers.cpp)'
+          assert source.count(anchor) == 1, source.count(anchor)
+          path.write_text(source.replace(
+              anchor,
+              '  arrow_output_version_buffers.cpp\n  arrow_union_type_ids.cpp)',
+              1,
+          ))
+          PY
           make generate-files 2>&1 | tee receipt/generate-files.log
           git diff --check
           {
