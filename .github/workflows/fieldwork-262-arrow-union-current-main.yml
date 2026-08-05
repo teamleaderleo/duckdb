@@ -49,11 +49,17 @@ jobs:
           sudo apt-get install -y -qq mold ninja-build
           mkdir -p receipt
           make generate-files-deps 2>&1 | tee receipt/generate-files-deps.log
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$PATH"
+          test "$(command -v clang-format)" = "$HOME/.local/bin/clang-format"
+          clang-format --version 2>&1 | tee receipt/clang-format-version.log
+          clang-format --version | grep -F 'version 11.0.1'
 
       - name: Restack exact human-owned source and regenerate enum output
         shell: bash
         run: |
           set -euo pipefail
+          test "$(command -v clang-format)" = "$HOME/.local/bin/clang-format"
           git diff --binary "$HISTORICAL_BASE" "$CLEAN_SOURCE" -- \
             src/function/table/arrow.cpp \
             src/function/table/arrow/arrow_duck_schema.cpp \
@@ -114,6 +120,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          test "$(command -v clang-format)" = "$HOME/.local/bin/clang-format"
           make -j4 format_tools 2>&1 | tee receipt/format-tools.log
           make format-check-silent enum-integrity-check extension-patch-check -j2 -Otarget \
             2>&1 | tee receipt/source-gates.log
