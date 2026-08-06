@@ -41,17 +41,26 @@ jobs:
             '.github/workflows/fieldwork-262-arrow-union-current-main.yml'
           git diff --check "$CURRENT_MAIN..HEAD"
 
-      - name: Install build and generation dependencies
+      - name: Install build and generation dependencies in one venv
         shell: bash
         run: |
           set -euo pipefail
           sudo apt-get update -y -qq
-          sudo apt-get install -y -qq mold ninja-build
+          sudo apt-get install -y -qq mold ninja-build python3-venv
           mkdir -p receipt
-          make generate-files-deps 2>&1 | tee receipt/generate-files-deps.log
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          export PATH="$HOME/.local/bin:$PATH"
-          test "$(command -v clang-format)" = "$HOME/.local/bin/clang-format"
+
+          generation_venv="$RUNNER_TEMP/duckdb-generate-venv"
+          python3 -m venv "$generation_venv"
+          make PYTHON="$generation_venv/bin/python3" generate-files-deps \
+            2>&1 | tee receipt/generate-files-deps.log
+
+          echo "$generation_venv/bin" >> "$GITHUB_PATH"
+          echo "GENERATION_VENV=$generation_venv" >> "$GITHUB_ENV"
+          export PATH="$generation_venv/bin:$PATH"
+
+          test "$(command -v python3)" = "$generation_venv/bin/python3"
+          test "$(command -v clang-format)" = "$generation_venv/bin/clang-format"
+          python3 --version 2>&1 | tee receipt/python-version.log
           clang-format --version 2>&1 | tee receipt/clang-format-version.log
           clang-format --version | grep -F 'version 11.0.1'
 
@@ -59,7 +68,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(command -v clang-format)" = "$HOME/.local/bin/clang-format"
+          test "$(command -v python3)" = "$GENERATION_VENV/bin/python3"
+          test "$(command -v clang-format)" = "$GENERATION_VENV/bin/clang-format"
           git diff --binary "$HISTORICAL_BASE" "$CLEAN_SOURCE" -- \
             src/function/table/arrow.cpp \
             src/function/table/arrow/arrow_duck_schema.cpp \
@@ -114,13 +124,16 @@ jobs:
             echo "historical_source=$CLEAN_SOURCE"
             echo "tested_source=$(git rev-parse HEAD)"
             echo "source_branch=$SOURCE_BRANCH"
+            echo "generation_python=$(command -v python3)"
+            echo "generation_clang_format=$(command -v clang-format)"
           } > receipt/identity.txt
 
       - name: Verify generated and formatted source is stable
         shell: bash
         run: |
           set -euo pipefail
-          test "$(command -v clang-format)" = "$HOME/.local/bin/clang-format"
+          test "$(command -v python3)" = "$GENERATION_VENV/bin/python3"
+          test "$(command -v clang-format)" = "$GENERATION_VENV/bin/clang-format"
           make -j4 format_tools 2>&1 | tee receipt/format-tools.log
           make format-check-silent enum-integrity-check extension-patch-check -j2 -Otarget \
             2>&1 | tee receipt/source-gates.log
