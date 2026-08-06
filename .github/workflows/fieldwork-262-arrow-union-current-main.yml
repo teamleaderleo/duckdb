@@ -101,9 +101,9 @@ jobs:
           ))
           PY
           make generate-files 2>&1 | tee receipt/generate-files.log
-          git diff --check
+          git diff --check HEAD
           {
-            git diff --name-only
+            git diff --name-only HEAD
             git ls-files --others --exclude-standard | grep -v '^receipt/' || true
           } | sort -u > receipt/actual-files.txt
           cat > receipt/expected-files.txt <<'EOF'
@@ -118,7 +118,8 @@ jobs:
           test/arrow/arrow_union_type_ids.cpp
           EOF
           diff -u receipt/expected-files.txt receipt/actual-files.txt
-          git diff --binary -- $(cat receipt/expected-files.txt) > receipt/current-main-source.patch
+          git diff --binary HEAD -- $(cat receipt/expected-files.txt) > receipt/current-main-source.patch
+          test -s receipt/current-main-source.patch
           git config user.name fieldwork-bot
           git config user.email fieldwork-bot@users.noreply.github.com
           git add $(cat receipt/expected-files.txt)
