@@ -1,0 +1,92 @@
+name: Fieldwork C API Arrow multi-column ownership characterization
+
+on:
+  pull_request:
+    branches:
+      - fieldwork/capi-arrow-multicolumn-ownership-base
+    paths:
+      - .github/workflows/fieldwork-capi-arrow-multicolumn-ownership.yml
+      - test/api/capi/CMakeLists.txt
+      - test/api/capi/test_capi_arrow_multicolumn_ownership.cpp
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fieldwork-capi-arrow-multicolumn-ownership-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  characterize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Check out exact characterization head
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify exact carrier identity
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+          EXPECTED_BASE: 58c019320e250a7b369efd756f84c6dfd68bedcb
+          ACTUAL_BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test "$ACTUAL_BASE" = "$EXPECTED_BASE"
+          git diff --name-only "$EXPECTED_BASE"...HEAD | sort > "$RUNNER_TEMP/carrier-files.txt"
+          cat > "$RUNNER_TEMP/expected-files.txt" <<'EOF'
+          .github/workflows/fieldwork-capi-arrow-multicolumn-ownership.yml
+          test/api/capi/CMakeLists.txt
+          test/api/capi/test_capi_arrow_multicolumn_ownership.cpp
+          EOF
+          diff -u "$RUNNER_TEMP/expected-files.txt" "$RUNNER_TEMP/carrier-files.txt"
+          git diff --check "$EXPECTED_BASE"...HEAD
+
+      - name: Install build dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y -qq
+          sudo apt-get install -y -qq mold ninja-build
+
+      - name: Build debug test runner
+        run: |
+          set -euo pipefail
+          GEN=ninja make debug 2>&1 | tee "$RUNNER_TEMP/build.log"
+
+      - name: Run existing C API Arrow control
+        run: |
+          set -euo pipefail
+          build/debug/test/unittest "Test C-API Arrow conversion functions" \
+            2>&1 | tee "$RUNNER_TEMP/control.log"
+
+      - name: Require ownership characterization to fail with exact signature
+        run: |
+          set -uo pipefail
+          set +e
+          build/debug/test/unittest \
+            "C API Arrow multi-column conversion retains root ownership" \
+            2>&1 | tee "$RUNNER_TEMP/characterization.log"
+          status=${PIPESTATUS[0]}
+          set -e
+          test "$status" -ne 0
+          grep -F 'root release count before chunk destroy=1' "$RUNNER_TEMP/characterization.log"
+          grep -F 'second output=-9999,-9999,-9999' "$RUNNER_TEMP/characterization.log"
+          printf 'expected_negative_status=%s\n' "$status" | tee "$RUNNER_TEMP/identity.txt"
+
+      - name: Upload characterization receipt
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
+        with:
+          name: fieldwork-capi-arrow-multicolumn-ownership
+          path: |
+            ${{ runner.temp }}/carrier-files.txt
+            ${{ runner.temp }}/build.log
+            ${{ runner.temp }}/control.log
+            ${{ runner.temp }}/characterization.log
+            ${{ runner.temp }}/identity.txt
+          if-no-files-found: warn
+          retention-days: 30
