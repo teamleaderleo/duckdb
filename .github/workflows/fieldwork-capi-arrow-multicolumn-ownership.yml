@@ -63,18 +63,18 @@ jobs:
           build/debug/test/unittest "Test C-API Arrow conversion functions" \
             2>&1 | tee "$RUNNER_TEMP/control.log"
 
-      - name: Require ownership characterization to fail with exact signature
+      - name: Require projected ownership characterization to fail
         run: |
           set -uo pipefail
           set +e
           build/debug/test/unittest \
-            "C API Arrow multi-column conversion retains root ownership" \
+            "C API Arrow projected later column retains root ownership" \
             2>&1 | tee "$RUNNER_TEMP/characterization.log"
           status=${PIPESTATUS[0]}
           set -e
           test "$status" -ne 0
-          grep -F 'root release count before chunk destroy=1' "$RUNNER_TEMP/characterization.log"
-          grep -F 'second output=-9999,-9999,-9999' "$RUNNER_TEMP/characterization.log"
+          grep -F 'root release count after source chunk destroy=1' "$RUNNER_TEMP/characterization.log"
+          grep -F 'surviving second output=-9999,-9999,-9999' "$RUNNER_TEMP/characterization.log"
           printf 'expected_negative_status=%s\n' "$status" | tee "$RUNNER_TEMP/identity.txt"
 
       - name: Upload characterization receipt
