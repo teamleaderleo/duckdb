@@ -59,8 +59,10 @@ TEST_CASE("C API Arrow multi-column conversion retains root ownership", "[capi][
 	REQUIRE(error == nullptr);
 	REQUIRE(converted_schema != nullptr);
 
-	std::array<int32_t, 3> first_values = {11, 12, 13};
-	std::array<int32_t, 3> second_values = {21, 22, 23};
+	const std::array<int32_t, 3> expected_first = {11, 12, 13};
+	const std::array<int32_t, 3> expected_second = {21, 22, 23};
+	std::array<int32_t, 3> first_values = expected_first;
+	std::array<int32_t, 3> second_values = expected_second;
 
 	const void *first_buffers[2] = {nullptr, first_values.data()};
 	ArrowArray first_array {};
@@ -119,8 +121,8 @@ TEST_CASE("C API Arrow multi-column conversion retains root ownership", "[capi][
 	INFO("root release count after chunk destroy=" << releases_after_chunk_destroy);
 	INFO("second output=" << copied_second[0] << "," << copied_second[1] << "," << copied_second[2]);
 
-	CHECK(copied_first == first_values);
-	CHECK(copied_second == std::array<int32_t, 3> {21, 22, 23});
+	CHECK(copied_first == expected_first);
+	CHECK(copied_second == expected_second);
 	CHECK(releases_before_chunk_destroy == 0);
 	CHECK(releases_after_chunk_destroy == 1);
 }
