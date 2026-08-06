@@ -100,26 +100,29 @@ TEST_CASE("C API Arrow projected later column retains root ownership", "[capi][a
 	REQUIRE(output_chunk != nullptr);
 	REQUIRE(release_state.release_count == 0);
 
-	auto internal_chunk = reinterpret_cast<DataChunk *>(output_chunk);
-	Vector surviving_second = Vector::Ref(internal_chunk->data[1]);
+	idx_t releases_after_source_destroy;
+	{
+		auto internal_chunk = reinterpret_cast<DataChunk *>(output_chunk);
+		Vector surviving_second = Vector::Ref(internal_chunk->data[1]);
 
-	const auto before_destroy = FlatVector::GetData<int32_t>(surviving_second);
-	CHECK(std::array<int32_t, 3> {before_destroy[0], before_destroy[1], before_destroy[2]} == expected_second);
+		const auto before_destroy = FlatVector::GetData<int32_t>(surviving_second);
+		std::array<int32_t, 3> initial_values = {before_destroy[0], before_destroy[1], before_destroy[2]};
+		CHECK(initial_values == expected_second);
 
-	duckdb_destroy_data_chunk(&output_chunk);
-	const auto releases_after_source_destroy = release_state.release_count;
+		duckdb_destroy_data_chunk(&output_chunk);
+		releases_after_source_destroy = release_state.release_count;
 
-	const auto after_destroy = FlatVector::GetData<int32_t>(surviving_second);
-	std::array<int32_t, 3> surviving_values = {after_destroy[0], after_destroy[1], after_destroy[2]};
+		const auto after_destroy = FlatVector::GetData<int32_t>(surviving_second);
+		std::array<int32_t, 3> surviving_values = {after_destroy[0], after_destroy[1], after_destroy[2]};
 
-	INFO("root release count after source chunk destroy=" << releases_after_source_destroy);
-	INFO("surviving second output=" << surviving_values[0] << "," << surviving_values[1] << ","
-	                                << surviving_values[2]);
+		INFO("root release count after source chunk destroy=" << releases_after_source_destroy);
+		INFO("surviving second output=" << surviving_values[0] << "," << surviving_values[1] << ","
+		                                << surviving_values[2]);
 
-	CHECK(releases_after_source_destroy == 0);
-	CHECK(surviving_values == expected_second);
+		CHECK(releases_after_source_destroy == 0);
+		CHECK(surviving_values == expected_second);
+	}
 
-	surviving_second = Vector(LogicalType::INTEGER);
 	const auto releases_after_survivor_destroy = release_state.release_count;
 	INFO("root release count after surviving projection destroy=" << releases_after_survivor_destroy);
 	CHECK(releases_after_survivor_destroy == 1);
