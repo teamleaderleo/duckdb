@@ -53,6 +53,8 @@ jobs:
           python3 -m venv "$generation_venv"
           make PYTHON="$generation_venv/bin/python3" generate-files-deps \
             2>&1 | tee receipt/generate-files-deps.log
+          make PYTHON="$generation_venv/bin/python3" spell_tools \
+            2>&1 | tee receipt/spell-tools.log
 
           echo "$generation_venv/bin" >> "$GITHUB_PATH"
           echo "GENERATION_VENV=$generation_venv" >> "$GITHUB_ENV"
@@ -60,9 +62,11 @@ jobs:
 
           test "$(command -v python3)" = "$generation_venv/bin/python3"
           test "$(command -v clang-format)" = "$generation_venv/bin/clang-format"
+          test -n "$(command -v typos)"
           python3 --version 2>&1 | tee receipt/python-version.log
           clang-format --version 2>&1 | tee receipt/clang-format-version.log
           clang-format --version | grep -F 'version 11.0.1'
+          typos --version 2>&1 | tee receipt/typos-version.log
 
       - name: Restack exact human-owned source and regenerate enum output
         shell: bash
@@ -70,6 +74,7 @@ jobs:
           set -euo pipefail
           test "$(command -v python3)" = "$GENERATION_VENV/bin/python3"
           test "$(command -v clang-format)" = "$GENERATION_VENV/bin/clang-format"
+          test -n "$(command -v typos)"
           git diff --binary "$HISTORICAL_BASE" "$CLEAN_SOURCE" -- \
             src/function/table/arrow.cpp \
             src/function/table/arrow/arrow_duck_schema.cpp \
@@ -126,6 +131,7 @@ jobs:
             echo "source_branch=$SOURCE_BRANCH"
             echo "generation_python=$(command -v python3)"
             echo "generation_clang_format=$(command -v clang-format)"
+            echo "generation_typos=$(command -v typos)"
           } > receipt/identity.txt
 
       - name: Verify generated and formatted source is stable
@@ -134,6 +140,7 @@ jobs:
           set -euo pipefail
           test "$(command -v python3)" = "$GENERATION_VENV/bin/python3"
           test "$(command -v clang-format)" = "$GENERATION_VENV/bin/clang-format"
+          test -n "$(command -v typos)"
           make -j4 format_tools 2>&1 | tee receipt/format-tools.log
           make format-check-silent enum-integrity-check extension-patch-check -j2 -Otarget \
             2>&1 | tee receipt/source-gates.log
