@@ -1,5 +1,7 @@
 #include "capi_tester.hpp"
 #include "duckdb/common/arrow/arrow.hpp"
+#include "duckdb/common/types/data_chunk.hpp"
+#include "duckdb/common/vector/flat_vector.hpp"
 
 #include <array>
 
@@ -32,7 +34,7 @@ void ReleaseRootAndPoisonSecondColumn(ArrowArray *array) {
 
 } // namespace
 
-TEST_CASE("C API Arrow multi-column conversion retains root ownership", "[capi][arrow]") {
+TEST_CASE("C API Arrow projected later column retains root ownership", "[capi][arrow]") {
 	CAPITester tester;
 	REQUIRE(tester.OpenDatabase(nullptr));
 
@@ -59,9 +61,8 @@ TEST_CASE("C API Arrow multi-column conversion retains root ownership", "[capi][
 	REQUIRE(error == nullptr);
 	REQUIRE(converted_schema != nullptr);
 
-	const std::array<int32_t, 3> expected_first = {11, 12, 13};
 	const std::array<int32_t, 3> expected_second = {21, 22, 23};
-	std::array<int32_t, 3> first_values = expected_first;
+	std::array<int32_t, 3> first_values = {11, 12, 13};
 	std::array<int32_t, 3> second_values = expected_second;
 
 	const void *first_buffers[2] = {nullptr, first_values.data()};
@@ -97,32 +98,34 @@ TEST_CASE("C API Arrow multi-column conversion retains root ownership", "[capi][
 	error = duckdb_data_chunk_from_arrow(tester.connection, &root_array, converted_schema, &output_chunk);
 	REQUIRE(error == nullptr);
 	REQUIRE(output_chunk != nullptr);
+	REQUIRE(release_state.release_count == 0);
 
-	const auto releases_before_chunk_destroy = release_state.release_count;
-	const auto output_size = duckdb_data_chunk_get_size(output_chunk);
-	REQUIRE(output_size == first_values.size());
+	auto internal_chunk = reinterpret_cast<DataChunk *>(output_chunk);
+	Vector surviving_second = Vector::Ref(internal_chunk->data[1]);
 
-	auto first_vector = duckdb_data_chunk_get_vector(output_chunk, 0);
-	auto second_vector = duckdb_data_chunk_get_vector(output_chunk, 1);
-	auto first_output = static_cast<int32_t *>(duckdb_vector_get_data(first_vector));
-	auto second_output = static_cast<int32_t *>(duckdb_vector_get_data(second_vector));
-
-	std::array<int32_t, 3> copied_first = {first_output[0], first_output[1], first_output[2]};
-	std::array<int32_t, 3> copied_second = {second_output[0], second_output[1], second_output[2]};
+	const auto before_destroy = FlatVector::GetData<int32_t>(surviving_second);
+	CHECK(std::array<int32_t, 3> {before_destroy[0], before_destroy[1], before_destroy[2]} == expected_second);
 
 	duckdb_destroy_data_chunk(&output_chunk);
-	const auto releases_after_chunk_destroy = release_state.release_count;
+	const auto releases_after_source_destroy = release_state.release_count;
+
+	const auto after_destroy = FlatVector::GetData<int32_t>(surviving_second);
+	std::array<int32_t, 3> surviving_values = {after_destroy[0], after_destroy[1], after_destroy[2]};
+
+	INFO("root release count after source chunk destroy=" << releases_after_source_destroy);
+	INFO("surviving second output=" << surviving_values[0] << "," << surviving_values[1] << ","
+	                                << surviving_values[2]);
+
+	CHECK(releases_after_source_destroy == 0);
+	CHECK(surviving_values == expected_second);
+
+	surviving_second = Vector(LogicalType::INTEGER);
+	const auto releases_after_survivor_destroy = release_state.release_count;
+	INFO("root release count after surviving projection destroy=" << releases_after_survivor_destroy);
+	CHECK(releases_after_survivor_destroy == 1);
+
 	duckdb_destroy_arrow_converted_schema(&converted_schema);
 	if (root_schema.release) {
 		root_schema.release(&root_schema);
 	}
-
-	INFO("root release count before chunk destroy=" << releases_before_chunk_destroy);
-	INFO("root release count after chunk destroy=" << releases_after_chunk_destroy);
-	INFO("second output=" << copied_second[0] << "," << copied_second[1] << "," << copied_second[2]);
-
-	CHECK(copied_first == expected_first);
-	CHECK(copied_second == expected_second);
-	CHECK(releases_before_chunk_destroy == 0);
-	CHECK(releases_after_chunk_destroy == 1);
 }
