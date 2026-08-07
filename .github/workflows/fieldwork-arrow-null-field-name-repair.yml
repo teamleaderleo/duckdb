@@ -6,7 +6,7 @@ on:
       - fieldwork/arrow-null-field-name-repair-base
     paths:
       - '.github/workflows/fieldwork-arrow-null-field-name-repair.yml'
-      - 'src/function/table/arrow.cpp'
+      - 'tools/fieldwork/apply_arrow_null_field_name_repair.py'
       - 'test/api/capi/CMakeLists.txt'
       - 'test/api/capi/test_capi_arrow_null_field_name.cpp'
 
@@ -29,7 +29,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Verify focused source fence
+      - name: Verify private repair carrier
         env:
           PUBLIC_BASE: e500d77864fe565f90e68f06d729c25b11e775c5
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
@@ -40,11 +40,24 @@ jobs:
           git diff --check "$BASE_SHA...HEAD_SHA"
           git diff --name-only "$BASE_SHA...HEAD_SHA" | sort > /tmp/changed.txt
           cat > /tmp/expected.txt <<'EOF'
-          src/function/table/arrow.cpp
           test/api/capi/CMakeLists.txt
           test/api/capi/test_capi_arrow_null_field_name.cpp
+          tools/fieldwork/apply_arrow_null_field_name_repair.py
           EOF
           diff -u /tmp/expected.txt /tmp/changed.txt
+          python -m py_compile tools/fieldwork/apply_arrow_null_field_name_repair.py
+
+      - name: Generate exact production repair
+        run: |
+          set -euo pipefail
+          mkdir -p receipt
+          python tools/fieldwork/apply_arrow_null_field_name_repair.py | tee receipt/generation.log
+          git diff --check
+          git diff --name-only | sort | tee receipt/source-files.txt
+          test "$(cat receipt/source-files.txt)" = 'src/function/table/arrow.cpp'
+          grep -F 'FIELDWORK_ARROW_NULL_NAME=normalize-null-before-fallback' receipt/generation.log
+          git diff -- src/function/table/arrow.cpp > receipt/generated.patch
+          test -s receipt/generated.patch
 
       - name: Install build dependencies
         run: |
@@ -55,7 +68,6 @@ jobs:
       - name: Build debug test runner
         run: |
           set -euo pipefail
-          mkdir -p receipt
           GEN=ninja make debug 2>&1 | tee receipt/build.log
 
       - name: Run existing C API Arrow control
