@@ -1,0 +1,80 @@
+name: Fieldwork Arrow null optional field name repair
+
+on:
+  pull_request:
+    branches:
+      - fieldwork/arrow-null-field-name-repair-base
+    paths:
+      - '.github/workflows/fieldwork-arrow-null-field-name-repair.yml'
+      - 'src/function/table/arrow.cpp'
+      - 'test/api/capi/CMakeLists.txt'
+      - 'test/api/capi/test_capi_arrow_null_field_name.cpp'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fieldwork-arrow-null-field-name-repair-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Check out exact repair head
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify focused source fence
+        env:
+          PUBLIC_BASE: e500d77864fe565f90e68f06d729c25b11e775c5
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git merge-base HEAD "$PUBLIC_BASE")" = "$PUBLIC_BASE"
+          git diff --check "$BASE_SHA...HEAD_SHA"
+          git diff --name-only "$BASE_SHA...HEAD_SHA" | sort > /tmp/changed.txt
+          cat > /tmp/expected.txt <<'EOF'
+          src/function/table/arrow.cpp
+          test/api/capi/CMakeLists.txt
+          test/api/capi/test_capi_arrow_null_field_name.cpp
+          EOF
+          diff -u /tmp/expected.txt /tmp/changed.txt
+
+      - name: Install build dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y -qq
+          sudo apt-get install -y -qq mold ninja-build
+
+      - name: Build debug test runner
+        run: |
+          set -euo pipefail
+          mkdir -p receipt
+          GEN=ninja make debug 2>&1 | tee receipt/build.log
+
+      - name: Run existing C API Arrow control
+        run: |
+          set -euo pipefail
+          build/debug/test/unittest "Test C-API Arrow conversion functions" \
+            2>&1 | tee receipt/control.log
+
+      - name: Run null-name regression
+        run: |
+          set -euo pipefail
+          build/debug/test/unittest "C API Arrow accepts a null optional field name" \
+            2>&1 | tee receipt/regression.log
+
+      - name: Upload focused receipt
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
+        with:
+          name: fieldwork-arrow-null-field-name-repair
+          path: receipt/
+          if-no-files-found: warn
+          retention-days: 30
