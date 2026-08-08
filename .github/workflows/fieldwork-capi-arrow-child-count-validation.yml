@@ -1,0 +1,107 @@
+name: Fieldwork C API Arrow child-count validation repair
+
+on:
+  pull_request:
+    branches:
+      - fieldwork/capi-arrow-child-count-validation-base
+    paths:
+      - .github/workflows/fieldwork-capi-arrow-child-count-validation.yml
+      - tools/fieldwork/apply_capi_arrow_child_count_validation.py
+      - test/api/capi/CMakeLists.txt
+      - test/api/capi/test_capi_arrow_child_count_validation.cpp
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fieldwork-capi-arrow-child-count-validation-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Check out exact repair head
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify exact carrier identity
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+          EXPECTED_BASE: 7a91c3658f9411ab17556e55f9df34b3b2140f6e
+          ACTUAL_BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
+          test "$ACTUAL_BASE" = "$EXPECTED_BASE"
+          python3 -m py_compile tools/fieldwork/apply_capi_arrow_child_count_validation.py
+          git diff --name-only "$EXPECTED_BASE"...HEAD | sort > "$RUNNER_TEMP/carrier-files.txt"
+          cat > "$RUNNER_TEMP/expected-carrier-files.txt" <<'EOF'
+          .github/workflows/fieldwork-capi-arrow-child-count-validation.yml
+          test/api/capi/CMakeLists.txt
+          test/api/capi/test_capi_arrow_child_count_validation.cpp
+          tools/fieldwork/apply_capi_arrow_child_count_validation.py
+          EOF
+          diff -u "$RUNNER_TEMP/expected-carrier-files.txt" "$RUNNER_TEMP/carrier-files.txt"
+          git diff --check "$EXPECTED_BASE"...HEAD
+
+      - name: Generate exact production repair
+        run: |
+          set -euo pipefail
+          python3 tools/fieldwork/apply_capi_arrow_child_count_validation.py \
+            2>&1 | tee "$RUNNER_TEMP/generation.log"
+          grep -F 'FIELDWORK_CAPI_ARROW_CHILD_COUNT=validate-before-transfer' \
+            "$RUNNER_TEMP/generation.log"
+          git diff --check
+          git diff --name-only | sort > "$RUNNER_TEMP/source-files.txt"
+          printf '%s\n' 'src/main/capi/arrow-c.cpp' > "$RUNNER_TEMP/expected-source-files.txt"
+          diff -u "$RUNNER_TEMP/expected-source-files.txt" "$RUNNER_TEMP/source-files.txt"
+          git diff --binary -- src/main/capi/arrow-c.cpp > "$RUNNER_TEMP/child-count-validation.patch"
+          test -s "$RUNNER_TEMP/child-count-validation.patch"
+          grep -F 'Arrow array child count mismatch: expected {}, got {}' src/main/capi/arrow-c.cpp
+          grep -F '*out_chunk = nullptr;' src/main/capi/arrow-c.cpp
+
+      - name: Install build dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y -qq
+          sudo apt-get install -y -qq mold ninja-build
+
+      - name: Build debug test runner with repair
+        run: |
+          set -euo pipefail
+          GEN=ninja make debug 2>&1 | tee "$RUNNER_TEMP/build.log"
+
+      - name: Run existing C API Arrow control
+        run: |
+          set -euo pipefail
+          build/debug/test/unittest "Test C-API Arrow conversion functions" \
+            2>&1 | tee "$RUNNER_TEMP/control.log"
+
+      - name: Run runtime child-count validation regression
+        run: |
+          set -euo pipefail
+          build/debug/test/unittest \
+            "C API Arrow validates runtime root child count before ownership transfer" \
+            2>&1 | tee "$RUNNER_TEMP/regression.log"
+          grep -F 'All tests passed' "$RUNNER_TEMP/regression.log"
+
+      - name: Upload exact repair receipt
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
+        with:
+          name: fieldwork-capi-arrow-child-count-validation
+          path: |
+            ${{ runner.temp }}/carrier-files.txt
+            ${{ runner.temp }}/source-files.txt
+            ${{ runner.temp }}/generation.log
+            ${{ runner.temp }}/child-count-validation.patch
+            ${{ runner.temp }}/build.log
+            ${{ runner.temp }}/control.log
+            ${{ runner.temp }}/regression.log
+          if-no-files-found: warn
+          retention-days: 30

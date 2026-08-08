@@ -15,6 +15,7 @@ add_library_unity(
   test_starting_database.cpp
   test_capi_appender.cpp
   test_capi_arrow.cpp
+  test_capi_arrow_child_count_validation.cpp
   test_capi_data_chunk.cpp
   test_capi_extract.cpp
   test_capi_geometry.cpp
