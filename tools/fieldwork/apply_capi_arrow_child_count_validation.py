@@ -22,8 +22,8 @@ NEW = """\tauto arrow_table = reinterpret_cast<duckdb::ArrowTableSchema *>(conve
 
 \tconst auto expected_children = duckdb::NumericCast<int64_t>(types.size());
 \tif (arrow_array->n_children != expected_children) {
-\t\tauto message = fmt::format("Arrow array child count mismatch: expected {}, got {}", expected_children,
-\t\t                           arrow_array->n_children);
+\t\tauto message = duckdb_fmt::format("Arrow array child count mismatch: expected {}, got {}", expected_children,
+\t\t                                  arrow_array->n_children);
 \t\treturn duckdb_create_error_data(DUCKDB_ERROR_INVALID_INPUT, message.c_str());
 \t}
 
