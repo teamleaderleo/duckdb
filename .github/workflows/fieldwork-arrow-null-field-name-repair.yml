@@ -37,8 +37,8 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git merge-base HEAD "$PUBLIC_BASE")" = "$PUBLIC_BASE"
-          git diff --check "$BASE_SHA...HEAD_SHA"
-          git diff --name-only "$BASE_SHA...HEAD_SHA" | sort > /tmp/changed.txt
+          git diff --check "$BASE_SHA...$HEAD_SHA"
+          git diff --name-only "$BASE_SHA...$HEAD_SHA" | sort > /tmp/changed.txt
           cat > /tmp/expected.txt <<'EOF'
           test/api/capi/CMakeLists.txt
           test/api/capi/test_capi_arrow_null_field_name.cpp
