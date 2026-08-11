@@ -92,6 +92,7 @@ jobs:
           make -j4 format_tools 2>&1 | tee receipt/format-tools.log
           make format-check-silent enum-integrity-check extension-patch-check -j2 -Otarget \
             2>&1 | tee receipt/source-gates.log
+          export PATH="$PWD/.cache/format-venv/bin:$PATH"
           make generate-files 2>&1 | tee receipt/generate-files.log
           git diff --exit-code
 
