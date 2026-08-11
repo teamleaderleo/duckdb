@@ -24,7 +24,7 @@ jobs:
     env:
       HISTORICAL_BASE: 81fcce7fa76a320dc65be54cb0825e5315ac6f5b
       HISTORICAL_SOURCE: 1c931ed41822f0e27d66afb636be2730695dcf8d
-      CURRENT_MAIN: daa81697e31a3dc97a93f11220037cd2213af6cd
+      CURRENT_MAIN: 22226bba7f8b3fa32b9b1c0777c2caf048cb4cef
       SOURCE_BRANCH: candidate/04-hive-default-marker-current-main
       GEN: ninja
     steps:
@@ -48,9 +48,9 @@ jobs:
           test -s receipt/historical-source.patch
           git apply --check --3way receipt/historical-source.patch
           git apply --3way receipt/historical-source.patch
-          git diff --check
+          git diff --cached --check
           {
-            git diff --name-only
+            git diff --cached --name-only
             git ls-files --others --exclude-standard | grep -v '^receipt/' || true
           } | sort -u > receipt/actual-files.txt
           printf '%s\n' \
@@ -58,7 +58,7 @@ jobs:
             test/sql/copy/parquet/parquet_hive_default_collision.test \
             | sort > receipt/expected-files.txt
           diff -u receipt/expected-files.txt receipt/actual-files.txt
-          git diff --binary -- \
+          git diff --cached --binary -- \
             src/execution/operator/persistent/physical_copy_to_file.cpp \
             test/sql/copy/parquet/parquet_hive_default_collision.test \
             > receipt/current-main-source.patch
