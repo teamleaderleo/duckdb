@@ -1,0 +1,211 @@
+name: Fieldwork 262 Arrow union current-main 2828 restack
+
+on:
+  push:
+    branches:
+      - exec/262-arrow-union-current-main-2828
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fieldwork-262-arrow-union-current-main-2828-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CURRENT_MAIN: 2828abd8a5759763f426ca1632cc237be8ff27c4
+  HISTORICAL_BASE: 2c9e51aa33dd07e928edae66304430aeb038edd7
+  CLEAN_SOURCE: 05eb977f3001be4797379df9a0a978a144ca86a0
+  SOURCE_BRANCH: candidate/14-arrow-union-type-id-current-main-2828
+  GEN: ninja
+
+jobs:
+  validate-and-publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Check out carrier head
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Verify carrier ancestry and reset to exact current main
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git merge-base HEAD "$CURRENT_MAIN")" = "$CURRENT_MAIN"
+          test "$(git diff --name-only "$CURRENT_MAIN..HEAD")" = \
+            '.github/workflows/fieldwork-262-arrow-union-current-main-2828.yml'
+          git diff --check "$CURRENT_MAIN..HEAD"
+          git reset --hard "$CURRENT_MAIN"
+          test "$(git rev-parse HEAD)" = "$CURRENT_MAIN"
+          mkdir -p receipt
+
+      - name: Install build and generation dependencies in one venv
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y -qq
+          sudo apt-get install -y -qq mold ninja-build python3-venv
+
+          generation_venv="$RUNNER_TEMP/duckdb-generate-venv"
+          python3 -m venv "$generation_venv"
+          make PYTHON="$generation_venv/bin/python3" generate-files-deps \
+            2>&1 | tee receipt/generate-files-deps.log
+          make PYTHON="$generation_venv/bin/python3" spell_tools \
+            2>&1 | tee receipt/spell-tools.log
+
+          echo "$generation_venv/bin" >> "$GITHUB_PATH"
+          echo "GENERATION_VENV=$generation_venv" >> "$GITHUB_ENV"
+          export PATH="$generation_venv/bin:$PATH"
+
+          test "$(command -v python3)" = "$generation_venv/bin/python3"
+          test "$(command -v clang-format)" = "$generation_venv/bin/clang-format"
+          test -n "$(command -v typos)"
+          python3 --version 2>&1 | tee receipt/python-version.log
+          clang-format --version 2>&1 | tee receipt/clang-format-version.log
+          clang-format --version | grep -F 'version 11.0.1'
+          typos --version 2>&1 | tee receipt/typos-version.log
+
+      - name: Restack exact clean source and regenerate enum output
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(command -v python3)" = "$GENERATION_VENV/bin/python3"
+          test "$(command -v clang-format)" = "$GENERATION_VENV/bin/clang-format"
+          test -n "$(command -v typos)"
+
+          git diff --binary "$HISTORICAL_BASE" "$CLEAN_SOURCE" -- \
+            src/function/table/arrow.cpp \
+            src/function/table/arrow/arrow_duck_schema.cpp \
+            src/function/table/arrow/arrow_type_info.cpp \
+            src/function/table/arrow_conversion.cpp \
+            src/include/duckdb/function/table/arrow/arrow_type_info.hpp \
+            src/include/duckdb/function/table/arrow/enum/arrow_type_info_type.hpp \
+            test/arrow/arrow_union_type_ids.cpp \
+            > receipt/clean-source.patch
+          test -s receipt/clean-source.patch
+          git apply --check --3way receipt/clean-source.patch
+          git apply --3way receipt/clean-source.patch
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('test/arrow/CMakeLists.txt')
+          source = path.read_text()
+          anchor = '  arrow_output_version_buffers.cpp)'
+          assert source.count(anchor) == 1, source.count(anchor)
+          path.write_text(source.replace(
+              anchor,
+              '  arrow_output_version_buffers.cpp\n  arrow_union_type_ids.cpp)',
+              1,
+          ))
+          PY
+
+          make generate-files 2>&1 | tee receipt/generate-files.log
+          git diff --check HEAD
+          {
+            git diff --name-only HEAD
+            git ls-files --others --exclude-standard | grep -v '^receipt/' || true
+          } | sort -u > receipt/actual-files.txt
+          cat > receipt/expected-files.txt <<'EOF'
+          src/common/enum_util.cpp
+          src/function/table/arrow.cpp
+          src/function/table/arrow/arrow_duck_schema.cpp
+          src/function/table/arrow/arrow_type_info.cpp
+          src/function/table/arrow_conversion.cpp
+          src/include/duckdb/function/table/arrow/arrow_type_info.hpp
+          src/include/duckdb/function/table/arrow/enum/arrow_type_info_type.hpp
+          test/arrow/CMakeLists.txt
+          test/arrow/arrow_union_type_ids.cpp
+          EOF
+          diff -u receipt/expected-files.txt receipt/actual-files.txt
+          git diff --binary HEAD -- $(cat receipt/expected-files.txt) > receipt/current-main-source.patch
+          test -s receipt/current-main-source.patch
+
+          git config user.name fieldwork-bot
+          git config user.email fieldwork-bot@users.noreply.github.com
+          git add $(cat receipt/expected-files.txt)
+          git commit -m 'fix(arrow): map sparse union type IDs'
+          {
+            echo "current_main=$CURRENT_MAIN"
+            echo "historical_base=$HISTORICAL_BASE"
+            echo "historical_source=$CLEAN_SOURCE"
+            echo "tested_source=$(git rev-parse HEAD)"
+            echo "source_branch=$SOURCE_BRANCH"
+            echo "generation_python=$(command -v python3)"
+            echo "generation_clang_format=$(command -v clang-format)"
+            echo "generation_typos=$(command -v typos)"
+          } > receipt/identity.txt
+
+      - name: Verify generated and formatted source is stable
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(command -v python3)" = "$GENERATION_VENV/bin/python3"
+          test "$(command -v clang-format)" = "$GENERATION_VENV/bin/clang-format"
+          test -n "$(command -v typos)"
+          make -j4 format_tools 2>&1 | tee receipt/format-tools.log
+          make format-check-silent enum-integrity-check extension-patch-check -j2 -Otarget \
+            2>&1 | tee receipt/source-gates.log
+          make generate-files 2>&1 | tee receipt/generate-files-repeat.log
+          git diff --exit-code
+
+      - name: Build debug test runner with current-main candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          GEN=ninja make debug 2>&1 | tee receipt/build.log
+
+      - name: Run positive Arrow mapping controls
+        shell: bash
+        run: |
+          set -euo pipefail
+          tests=(
+            'Arrow sparse union maps identity type IDs'
+            'Arrow sparse union maps non-sequential type IDs'
+            'Arrow sparse union maps reordered in-range type IDs'
+            'Arrow sparse union maps upper-bound type IDs'
+            'Arrow sparse union mapping honors a nonzero parent offset'
+            'Arrow sparse union mapping honors its offset when nested in a fixed-size list'
+          )
+          for test_name in "${tests[@]}"; do
+            build/debug/test/unittest "$test_name"
+          done 2>&1 | tee receipt/positive.log
+
+      - name: Run malformed Arrow schema and runtime controls
+        shell: bash
+        run: |
+          set -euo pipefail
+          tests=(
+            'Arrow sparse union rejects duplicate schema type IDs'
+            'Arrow sparse union rejects a negative schema type ID'
+            'Arrow sparse union rejects a schema type-ID count mismatch'
+            'Arrow sparse union rejects an array child-count mismatch'
+            'Arrow sparse union rejects an unmapped runtime type ID'
+            'Arrow sparse union rejects a negative runtime type ID'
+          )
+          for test_name in "${tests[@]}"; do
+            build/debug/test/unittest "$test_name"
+          done 2>&1 | tee receipt/malformed.log
+
+      - name: Publish exact tested current-main source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --exit-code
+          test "$(git diff --name-only "$CURRENT_MAIN..HEAD" | sort)" = \
+            "$(sort receipt/expected-files.txt)"
+          git checkout -B "$SOURCE_BRANCH"
+          git push origin "HEAD:refs/heads/$SOURCE_BRANCH"
+
+      - name: Upload exact receipt
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
+        with:
+          name: fieldwork-262-arrow-union-current-main-2828
+          path: receipt/
+          if-no-files-found: warn
+          retention-days: 30
