@@ -24,7 +24,7 @@ jobs:
     env:
       HISTORICAL_BASE: 81fcce7fa76a320dc65be54cb0825e5315ac6f5b
       HISTORICAL_SOURCE: 1c931ed41822f0e27d66afb636be2730695dcf8d
-      CURRENT_MAIN: 22226bba7f8b3fa32b9b1c0777c2caf048cb4cef
+      CURRENT_MAIN: 2828abd8a5759763f426ca1632cc237be8ff27c4
       SOURCE_BRANCH: candidate/04-hive-default-marker-current-main
       GEN: ninja
     steps:
