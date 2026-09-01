@@ -155,6 +155,10 @@ jobs:
           import os
           import pathlib
 
+          def require(condition, message):
+              if not condition:
+                  raise SystemExit(message)
+
           case_id = os.environ["CASE_ID"]
           expected_status = int(os.environ["EXPECTED_PROBE_STATUS"])
           expected_filtered = int(os.environ["EXPECTED_FILTERED_COUNT"])
@@ -164,9 +168,18 @@ jobs:
           inspection = json.loads(
               pathlib.Path(f"inspection-{case_id}.json").read_text()
           )
-          assert inspection["full_count"] == row_count, inspection
+          require(
+              inspection.get("full_count") == row_count,
+              f"{case_id}: full count mismatch: {inspection}",
+          )
           if expected_status >= 0:
-              assert status == expected_status, (status, inspection)
+              require(
+                  status == expected_status,
+                  f"{case_id}: expected probe status {expected_status}, got {status}",
+              )
           if expected_filtered >= 0:
-              assert inspection["enabled_filtered_count"] == expected_filtered, inspection
+              require(
+                  inspection.get("enabled_filtered_count") == expected_filtered,
+                  f"{case_id}: filtered count mismatch: {inspection}",
+              )
           PY

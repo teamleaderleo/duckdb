@@ -1,0 +1,169 @@
+name: Fieldwork secondary ART current main
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/fieldwork-secondary-art-current-main.yml'
+      - 'tools/fieldwork/secondary_art_source_identity_probe.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  SOURCE_SHA: 0d3191ffd2880900023be6d32f1126142dbe0b64
+  ROW_COUNT: '10000'
+
+jobs:
+  current-main:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Check out controlled evidence carrier
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install build dependency
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes ninja-build
+
+      - name: Fetch exact current upstream source
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git remote remove public 2>/dev/null || true
+          git remote add public https://github.com/duckdb/duckdb.git
+          git fetch --force --no-tags public "$SOURCE_SHA"
+          observed=$(git rev-parse FETCH_HEAD^{commit})
+          [[ "$observed" == "$SOURCE_SHA" ]]
+          source_dir="$RUNNER_TEMP/duckdb-current-source"
+          git worktree add --detach "$source_dir" "$observed"
+          printf 'source_dir=%s\n' "$source_dir" >>"$GITHUB_OUTPUT"
+          printf 'source_sha=%s\n' "$observed" | tee source.json
+
+      - name: Build one exact source library
+        shell: bash
+        env:
+          SOURCE_DIR: ${{ steps.source.outputs.source_dir }}
+        run: |
+          set -euo pipefail
+          make -C "$SOURCE_DIR" release GEN=ninja DISABLE_SHELL=1
+          mapfile -t libraries < <(find "$SOURCE_DIR/build/release" -type f -name 'libduckdb.so' -print)
+          if [[ ${#libraries[@]} -ne 1 ]]; then
+            printf 'expected one libduckdb.so, found %s\n' "${#libraries[@]}" >&2
+            exit 2
+          fi
+          runtime="$RUNNER_TEMP/dual-engine-current"
+          mkdir -p "$runtime/writer" "$runtime/checkpointer"
+          cp "${libraries[0]}" "$runtime/writer/libduckdb.so"
+          cp "${libraries[0]}" "$runtime/checkpointer/libduckdb.so"
+          [[ $(stat -c '%d:%i' "$runtime/writer/libduckdb.so") != $(stat -c '%d:%i' "$runtime/checkpointer/libduckdb.so") ]]
+          sha256sum "$runtime/writer/libduckdb.so" "$runtime/checkpointer/libduckdb.so" | tee libraries.sha256
+          printf '%s\n' "$runtime" >runtime.txt
+
+      - name: Run same-source dual-engine checkpoint probe
+        id: probe
+        shell: bash
+        run: |
+          set -euo pipefail
+          runtime=$(cat runtime.txt)
+          database="$PWD/secondary-art-current-main.duckdb"
+          set +e
+          python tools/fieldwork/secondary_art_source_identity_probe.py create \
+            "$runtime/writer/libduckdb.so" \
+            "$runtime/checkpointer/libduckdb.so" \
+            "$database" \
+            "$ROW_COUNT" \
+            "$SOURCE_SHA" \
+            | tee create.json
+          status=${PIPESTATUS[0]}
+          set -e
+          if [[ $status -ne 0 && $status -ne 1 ]]; then
+            echo "probe setup failed with status $status" >&2
+            exit "$status"
+          fi
+          printf 'probe_status=%s\n' "$status" | tee probe-status.txt
+          printf 'status=%s\n' "$status" >>"$GITHUB_OUTPUT"
+
+      - name: Inspect persisted file from a fresh process
+        shell: bash
+        run: |
+          set -euo pipefail
+          runtime=$(cat runtime.txt)
+          python tools/fieldwork/secondary_art_source_identity_probe.py inspect \
+            "$runtime/checkpointer/libduckdb.so" \
+            "$PWD/secondary-art-current-main.duckdb" \
+            "$ROW_COUNT" \
+            "$SOURCE_SHA" \
+            | tee inspection.json
+
+      - name: Classify current-main evidence
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import pathlib
+
+          def require(condition, message):
+              if not condition:
+                  raise SystemExit(message)
+
+          source_sha = os.environ['SOURCE_SHA']
+          row_count = int(os.environ['ROW_COUNT'])
+          status = int(pathlib.Path('probe-status.txt').read_text().strip().split('=', 1)[1])
+          created = json.loads(pathlib.Path('create.json').read_text())
+          inspected = json.loads(pathlib.Path('inspection.json').read_text())
+
+          require(created.get('source_sha') == source_sha, 'create source identity mismatch')
+          require(inspected.get('source_sha') == source_sha, 'inspection source identity mismatch')
+          writer = created['writer_library']
+          checkpointer = created['checkpointer_library']
+          require(writer['sha256'] == checkpointer['sha256'], 'engine bytes differ')
+          require((writer['device'], writer['inode']) != (checkpointer['device'], checkpointer['inode']), 'engine inodes reused')
+          require(writer['open_address'] != checkpointer['open_address'], 'dynamic loader reused one engine image')
+          require(type(created.get('wrong_result')) is bool, 'wrong_result not boolean')
+          require(status == (0 if created['wrong_result'] else 1), 'probe exit disagrees with classification')
+          require(created.get('full_count') == row_count and inspected.get('full_count') == row_count, 'physical rows changed')
+          require(inspected.get('disabled_filtered_count') == 1 and inspected.get('disabled_terminal_count') == 1, 'sequential-scan controls failed')
+          require(inspected.get('first_values') == list(range(1, 11)), 'ordered row control failed')
+          enabled_plan = json.dumps(inspected.get('enabled_plan', []))
+          disabled_plan = json.dumps(inspected.get('disabled_plan', []))
+          require('Index Scan' in enabled_plan, 'optimizer-enabled plan did not prove index execution')
+          require('Sequential Scan' in disabled_plan, 'optimizer-disabled plan did not prove sequential control')
+          classification = 'persisted_wrong_result' if status == 0 else 'clean_current_main'
+          print(f'classification\t{classification}')
+          print(f'source_sha\t{source_sha}')
+          print(f'enabled_first\t{inspected.get("enabled_filtered_count")}')
+          print(f'enabled_terminal\t{inspected.get("enabled_terminal_count")}')
+          print(f'disabled_first\t{inspected.get("disabled_filtered_count")}')
+          print(f'full_count\t{inspected.get("full_count")}')
+          PY
+
+      - name: Current-main probe status ${{ steps.probe.outputs.status }}
+        run: |
+          if [[ '${{ steps.probe.outputs.status }}' == '0' ]]; then
+            echo 'Current DuckDB main persisted a wrong secondary-ART result.'
+          else
+            echo 'Current DuckDB main was clean in the exact same-source dual-engine discriminator.'
+          fi
+
+      - name: Upload exact current-main evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: secondary-art-current-main-${{ env.SOURCE_SHA }}
+          path: |
+            source.json
+            libraries.sha256
+            create.json
+            probe-status.txt
+            inspection.json
+            secondary-art-current-main.duckdb
+            secondary-art-current-main.duckdb.wal
+          if-no-files-found: warn
+          retention-days: 14
