@@ -1,0 +1,39 @@
+name: Fieldwork rescue DuckDB 24560 apply check
+
+on:
+  push:
+    branches:
+      - 'fieldwork/rescue-24560-core-applycheck-20260901'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  replay-original-fix:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      UPSTREAM_BASE: 1582849bf9e35de3fa3c330935ede5ce598e28a3
+      UPSTREAM_FIX: 4f88e66a9b2c261c078801134d50fe2aac6f24da
+    steps:
+      - name: Check out exact evidence carrier
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Verify exact upstream parent and owned delta
+        run: |
+          test "$(git rev-parse HEAD^)" = "$UPSTREAM_BASE"
+          test "$(git diff --name-only "$UPSTREAM_BASE"..HEAD)" = ".github/workflows/fieldwork-rescue-24560-applycheck.yml"
+
+      - name: Replay original upstream commit and inspect staged result
+        run: |
+          git fetch --no-tags --depth=2 https://github.com/duckdb/duckdb.git "$UPSTREAM_FIX"
+          git cherry-pick --no-commit "$UPSTREAM_FIX"
+          git diff --cached --check
+          test "$(git diff --cached --name-only | sort)" = "$(printf '%s\n' 'src/function/window/window_boundaries_state.cpp' 'test/issues/general/test_24307.test' | sort)"
+          git diff --cached -- src/function/window/window_boundaries_state.cpp | grep -F '+				window_start = partition_end_data[chunk_idx];'
+          git status --short
