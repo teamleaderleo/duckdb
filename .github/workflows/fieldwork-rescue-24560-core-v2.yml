@@ -1,0 +1,81 @@
+name: Fieldwork rescue DuckDB 24560 core v2
+
+on:
+  push:
+    branches:
+      - 'fieldwork/rescue-24560-core-20260901-v2'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  replay-original-fix:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      UPSTREAM_BASE: 1582849bf9e35de3fa3c330935ede5ce598e28a3
+      UPSTREAM_FIX: 4f88e66a9b2c261c078801134d50fe2aac6f24da
+    steps:
+      - name: Check out owned evidence carrier
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Verify exact upstream parent and evidence-only owned delta
+        run: |
+          test "$(git rev-parse HEAD^)" = "$UPSTREAM_BASE"
+          test "$(git diff --name-only "$UPSTREAM_BASE"..HEAD)" = ".github/workflows/fieldwork-rescue-24560-core-v2.yml"
+          grep -Fq 'window_start = partition_begin_data[chunk_idx];' src/function/window/window_boundaries_state.cpp
+
+      - name: Fetch original upstream fix commit and regression
+        run: |
+          git fetch --no-tags --depth=2 https://github.com/duckdb/duckdb.git "$UPSTREAM_FIX"
+          git show "$UPSTREAM_FIX:test/issues/general/test_24307.test" > test/issues/general/test_24307.test
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -y -qq
+          sudo apt-get install -y -qq ninja-build
+
+      - name: Configure minimal current-main build
+        run: |
+          cmake -S . -B build/fieldwork -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DBUILD_EXTENSIONS='' \
+            -DFORCE_COLORED_OUTPUT=1
+
+      - name: Build current-main native test runner
+        run: cmake --build build/fieldwork --target unittest --parallel 4
+
+      - name: Prove current-main regression still fails
+        run: |
+          set +e
+          ./build/fieldwork/test/run 'test/issues/general/test_24307.test' > /tmp/baseline-regression.log 2>&1
+          rc=$?
+          set -e
+          cat /tmp/baseline-regression.log
+          test "$rc" -ne 0
+          rm test/issues/general/test_24307.test
+
+      - name: Replay original upstream fix without creating a replacement commit
+        run: |
+          git cherry-pick --no-commit "$UPSTREAM_FIX"
+          git diff --cached --check
+          test "$(git diff --cached --name-only | sort)" = "$(printf '%s\n' 'src/function/window/window_boundaries_state.cpp' 'test/issues/general/test_24307.test' | sort)"
+          git diff --cached -- src/function/window/window_boundaries_state.cpp | grep -F '+				window_start = partition_end_data[chunk_idx];'
+
+      - name: Rebuild repaired tree
+        run: cmake --build build/fieldwork --target unittest --parallel 4
+
+      - name: Run upstream regression and current relevant controls
+        run: |
+          ./build/fieldwork/test/run 'test/issues/general/test_24307.test'
+          ./build/fieldwork/test/run 'test/sql/window/test_empty_frames.test'
+          ./build/fieldwork/test/run 'test/sql/window/test_boundary_expr.test'
